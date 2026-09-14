@@ -1,0 +1,7 @@
+{
+  "id": "maya-unity-hdrp-preview",
+  "name": "Unity HDRP Preview",
+  "maya_versions": ["2024"],
+  "python": ["scripts"],
+  "entrypoint": "maya_unity_preview:show"
+}

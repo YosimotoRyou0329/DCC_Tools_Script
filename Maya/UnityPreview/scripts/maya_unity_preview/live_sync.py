@@ -1,6 +1,5 @@
 """Viewport mouse events only. No timer, idle callback or mesh polling."""
-from PySide2 import QtCore, QtWidgets
-from shiboken2 import wrapInstance
+from .qt import QtCore, QtWidgets, wrapInstance
 from maya import cmds, OpenMayaUI
 
 

@@ -1,6 +1,7 @@
 # Maya Unity HDRP Preview
 
-Maya 2024 / PySide2 用。Unityの既存PreviewHostに接続します。
+Maya 2024〜2027を起動対象にしています。PySide6 / PySide2を自動選択し、
+Unityの既存PreviewHostに接続します。Maya 2027本体での実機確認は未実施です。
 
 ## 起動
 

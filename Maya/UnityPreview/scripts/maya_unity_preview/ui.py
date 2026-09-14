@@ -4,8 +4,7 @@ import threading
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
-from PySide2 import QtCore, QtGui, QtWidgets
-from shiboken2 import wrapInstance
+from .qt import QtCore, QtGui, QtWidgets, wrapInstance
 from maya import OpenMayaUI
 
 from .transport import FrameReceiver, send_meshes

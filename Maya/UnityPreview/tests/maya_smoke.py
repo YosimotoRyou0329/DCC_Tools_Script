@@ -4,7 +4,7 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from PySide2 import QtWidgets
+from maya_unity_preview.qt import QtWidgets
 from unittest.mock import patch
 from maya_unity_preview.ui import PreviewTool
 

@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from maya_reference_sheet.layout import plane_placement, detect_guides, VIEWS
+from maya_reference_sheet.layout import plane_placement, detect_guides, fit_all, placement_from_fit, VIEWS
 
 
 def close(a, b):
@@ -47,6 +47,49 @@ class PlacementTests(unittest.TestCase):
     def test_rejects_inverted_guides(self):
         with self.assertRaises(ValueError):
             plane_placement("front", 10, 10, {"top": 8, "bottom": 2, "center": 5}, 1, 1)
+
+
+class FitTests(unittest.TestCase):
+    master = {"top": 0.0, "bottom": 1000.0, "center": 500.0, "eye": 100.0, "chin": 200.0}
+
+    def world(self, fit, row):
+        return fit["origin"] - fit["scale"] * row
+
+    def test_master_defines_the_world(self):
+        fits, targets = fit_all({"front": self.master}, "front", 160.0, ["top", "bottom"])
+        self.assertAlmostEqual(targets["top"], 160.0)
+        self.assertAlmostEqual(targets["bottom"], 0.0)
+        self.assertAlmostEqual(targets["eye"], 160.0 - 16.0)
+
+    def test_two_landmarks_match_exactly(self):
+        # side image: head drawn bigger and higher (eye 50 -> chin 250), body proportions differ
+        side = {"top": 0.0, "bottom": 1100.0, "center": 400.0, "eye": 50.0, "chin": 250.0}
+        fits, targets = fit_all({"front": self.master, "left": side}, "front", 160.0, ["eye", "chin"])
+        fit = fits["left"]
+        self.assertAlmostEqual(self.world(fit, side["eye"]), targets["eye"])
+        self.assertAlmostEqual(self.world(fit, side["chin"]), targets["chin"])
+        self.assertTrue(all(abs(e) < 1e-9 for e in fit["residuals"].values()))
+        self.assertAlmostEqual(fit["scale"], 16.0 / 200.0)    # uniform: never stretched
+
+    def test_one_landmark_moves_only(self):
+        side = {"top": 0.0, "bottom": 800.0, "center": 400.0, "eye": 60.0}
+        fits, targets = fit_all({"front": self.master, "left": side}, "front", 160.0, ["eye"])
+        self.assertAlmostEqual(fits["left"]["scale"], 160.0 / 800.0)   # own head-to-feet scale
+        self.assertAlmostEqual(self.world(fits["left"], 60.0), targets["eye"])
+
+    def test_least_squares_with_three(self):
+        side = dict(self.master, eye=110.0, chin=190.0)
+        fits, _ = fit_all({"front": self.master, "left": side}, "front", 160.0, ["top", "eye", "chin"])
+        residuals = fits["left"]["residuals"]
+        self.assertAlmostEqual(sum(residuals.values()), 0.0)   # balanced error, nothing exact
+        self.assertTrue(max(abs(e) for e in residuals.values()) < 2.0)
+
+    def test_placement_from_fit_matches_plane_placement(self):
+        guides = {"top": 100.0, "bottom": 900.0, "center": 400.0}
+        a = plane_placement("left", 1000, 1200, guides, 160.0, 50.0, True)
+        scale = 160.0 / 800.0
+        b = placement_from_fit("left", 1000, 1200, 400.0, scale, scale * 900.0, 50.0, True)
+        self.assertEqual(a, b)
 
 
 class DetectTests(unittest.TestCase):

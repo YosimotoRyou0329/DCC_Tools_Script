@@ -1,43 +1,52 @@
+import json
 import socket
-import struct
+import sys
 import threading
 import unittest
-import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from maya_unity_preview.transport import read_frame, FrameReceiver
+from maya_unity_preview.transport import is_listening, send_messages, remove_message
 
 
 class TransportTests(unittest.TestCase):
-    def test_fragmented_frame(self):
-        a, b = socket.socketpair()
-        payload = struct.pack("<iii", 2, 1, 8) + bytes(range(8))
-        def writer():
-            with a:
-                for byte in payload:
-                    a.sendall(bytes([byte]))
-        worker = threading.Thread(target=writer)
+    def setUp(self):
+        self.server = socket.socket()
+        self.server.bind(("127.0.0.1", 0))
+        self.server.listen(8)
+        self.port = self.server.getsockname()[1]
+
+    def tearDown(self):
+        self.server.close()
+
+    def test_is_listening(self):
+        self.assertTrue(is_listening(port=self.port))
+        self.server.close()
+        self.assertFalse(is_listening(port=self.port))
+
+    def test_one_json_line_per_connection(self):
+        received = []
+
+        def accept(count):
+            for _ in range(count):
+                client, _ = self.server.accept()
+                with client, client.makefile("r", encoding="utf-8") as reader:
+                    received.append(json.loads(reader.readline()))
+
+        worker = threading.Thread(target=accept, args=(2,))
         worker.start()
-        with b:
-            self.assertEqual(read_frame(b), (2, 1, bytes(range(8))))
-        worker.join()
+        send_messages([{"type": "MESH_DATA_V2", "name": "a"}, remove_message("|b|bShape")], port=self.port)
+        worker.join(3)
+        self.assertEqual(received, [{"type": "MESH_DATA_V2", "name": "a"},
+                                    {"type": "MESH_REMOVE", "name": "|b|bShape"}])
 
-    def test_reject_bad_size_and_truncated_frame(self):
-        for data, error in ((struct.pack("<iii", 1, 1, 8), ValueError),
-                            (struct.pack("<iii", 1, 1, 4) + b"x", ConnectionError)):
-            a, b = socket.socketpair()
-            a.sendall(data)
-            a.close()
-            with b, self.assertRaises(error):
-                read_frame(b)
-
-    def test_start_stop_releases_port(self):
-        for _ in range(2):
-            receiver = FrameReceiver(lambda *args: None, lambda error: None)
-            receiver.start()
-            receiver.stop()
-            self.assertFalse(receiver.thread.is_alive())
+    def test_cancelled_sends_nothing(self):
+        event = threading.Event()
+        event.set()
+        send_messages([{"type": "x"}], cancelled=event, port=self.port)
+        self.server.settimeout(0.2)
+        with self.assertRaises(socket.timeout):
+            self.server.accept()
 
 
 if __name__ == "__main__":

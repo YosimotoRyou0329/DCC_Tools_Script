@@ -1,87 +1,32 @@
-"""Socket transport only; no Maya or Qt calls."""
+"""Socket transport only; no Maya or Qt calls.
+
+Unity PreviewHost listens on 127.0.0.1:50001 and reads one JSON line per connection.
+"""
 import json
 import socket
-import struct
-import threading
+
+HOST = "127.0.0.1"
+PORT = 50001
 
 
-def read_exact(connection, size):
-    result = bytearray()
-    while len(result) < size:
-        part = connection.recv(min(size - len(result), 1024 * 1024))
-        if not part:
-            raise ConnectionError("Frame connection closed before completion")
-        result.extend(part)
-    return bytes(result)
+def is_listening(host=HOST, port=PORT, timeout=0.3):
+    """True when the Unity PreviewHost accepts connections."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
-def read_frame(connection):
-    width, height, size = struct.unpack("<iii", read_exact(connection, 12))
-    if not (0 < width <= 8192 and 0 < height <= 8192 and
-            size == width * height * 4 and size <= 64 * 1024 * 1024):
-        raise ValueError("Invalid RGBA frame header")
-    return width, height, read_exact(connection, size)
-
-
-def send_meshes(meshes, cancelled=None):
-    for mesh in meshes:
+def send_messages(messages, cancelled=None, host=HOST, port=PORT):
+    """Send each message (dict) as one JSON line on its own connection."""
+    for message in messages:
         if cancelled is not None and cancelled.is_set():
             return
-        payload = (json.dumps(mesh, separators=(",", ":")) + "\n").encode("utf-8")
-        with socket.create_connection(("127.0.0.1", 50001), timeout=2) as connection:
+        payload = (json.dumps(message, separators=(",", ":")) + "\n").encode("utf-8")
+        with socket.create_connection((host, port), timeout=2) as connection:
             connection.sendall(payload)
 
 
-class FrameReceiver:
-    def __init__(self, on_frame, on_error):
-        self.on_frame = on_frame
-        self.on_error = on_error
-        self.stop_event = threading.Event()
-        self.listener = None
-        self.client = None
-        self.thread = None
-
-    def start(self):
-        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            listener.bind(("127.0.0.1", 50002))
-            listener.listen(2)
-            listener.settimeout(0.5)
-        except Exception:
-            listener.close()
-            raise
-        self.listener = listener
-        self.thread = threading.Thread(target=self.run, daemon=True)
-        self.thread.start()
-
-    def run(self):
-        while not self.stop_event.is_set():
-            try:
-                client, _ = self.listener.accept()
-                self.client = client
-                with client:
-                    if self.stop_event.is_set():
-                        return
-                    client.settimeout(3)
-                    frame = read_frame(client)
-                    if not self.stop_event.is_set():
-                        self.on_frame(*frame)
-            except socket.timeout:
-                continue
-            except (OSError, ValueError, ConnectionError) as error:
-                if not self.stop_event.is_set():
-                    self.on_error(str(error))
-            finally:
-                self.client = None
-
-    def stop(self):
-        self.stop_event.set()
-        for connection in (self.client, self.listener):
-            if connection:
-                try:
-                    connection.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
-                connection.close()
-        if self.thread:
-            self.thread.join(timeout=4)
+def remove_message(name):
+    return {"type": "MESH_REMOVE", "name": name}

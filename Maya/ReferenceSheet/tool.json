@@ -1,0 +1,7 @@
+{
+  "id": "maya-reference-sheet",
+  "name": "Reference Sheet（三面図）",
+  "maya_versions": ["2024", "2025", "2026", "2027"],
+  "python": ["scripts"],
+  "entrypoint": "maya_reference_sheet:show"
+}

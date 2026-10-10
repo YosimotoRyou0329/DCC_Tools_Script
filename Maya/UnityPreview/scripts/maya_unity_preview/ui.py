@@ -1,265 +1,152 @@
-"""Maya-owned GUI and lifecycle coordination.
+"""Dockable Maya panel. It only displays / edits the controller; closing it keeps syncing.
 
-- Unity started (by this tool or by hand) -> detected automatically, all meshes are sent,
-  then every change is synced by SceneWatch. No "send" button needed.
-- The Unity window itself is the preview: it can be resized, pinned as Picture-in-Picture
-  (always on top) and hidden / shown from here.
+Dock it anywhere (e.g. as a tab next to the Attribute Editor) or close it; reopen from the
+DCC Launcher menu. The sync list accepts objects dragged from the Outliner.
 """
-import subprocess
-import threading
-from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
+import re
 
-from maya import cmds, OpenMayaUI
+from maya import cmds
+from maya.app.general.mayaMixin import MayaQWidgetDockableMixin
 
-from .qt import QtCore, QtWidgets, wrapInstance
-from .mesh import meshes_for
-from .scene_watch import SceneWatch
-from .transport import is_listening, send_messages, remove_message
-from . import unity_window
-
-MONITOR_INTERVAL = 1.0
+from .qt import QtCore, QtGui, QtWidgets
 
 
-class PreviewTool(QtWidgets.QDialog):
-    connection_changed = QtCore.Signal(bool)
-    send_finished = QtCore.Signal(str)
+class DropList(QtWidgets.QListWidget):
+    """List that accepts Outliner drags (node names arrive as text)."""
+    nodes_dropped = QtCore.Signal(list)
 
-    def __init__(self):
-        self.maya_window = wrapInstance(int(OpenMayaUI.MQtUtil.mainWindow()), QtWidgets.QWidget)
-        super().__init__(self.maya_window)
-        self.setWindowTitle("Maya Unity HDRP Preview")
-        self.settings = QtCore.QSettings("DCCLauncher", "MayaUnityPreview")
-        self.process = None
-        self.closed = False
-        self.connected = False
-        self.sending = False
-        self.cancelled = threading.Event()
-        self.executor = ThreadPoolExecutor(max_workers=1)
-        self.unity = None
-        self.normal_rect = None
-        self.watch = SceneWatch(self.flush, self)
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QtWidgets.QAbstractItemView.DropOnly)
+        self.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
 
+    def dragEnterEvent(self, event):
+        event.acceptProposedAction()
+
+    def dragMoveEvent(self, event):
+        event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        text = event.mimeData().text() if event.mimeData().hasText() else ""
+        names = [n for n in re.split(r"[\s,]+", text) if n and cmds.objExists(n)]
+        if not names:   # Outliner drags select what they drag: fall back to the selection
+            names = cmds.ls(selection=True, long=True, objectsOnly=True) or []
+        event.acceptProposedAction()
+        self.nodes_dropped.emit(names)
+
+
+class PreviewPanel(MayaQWidgetDockableMixin, QtWidgets.QWidget):
+    OBJECT_NAME = "MayaUnityPreviewPanel"
+
+    def __init__(self, controller, parent=None):
+        super().__init__(parent=parent)
+        self.controller = controller
+        self.setObjectName(self.OBJECT_NAME)
+        self.setWindowTitle("Unity HDRP Preview")
         layout = QtWidgets.QVBoxLayout(self)
-        layout.addWidget(QtWidgets.QLabel("Unity PreviewHost.exe"))
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
+
+        # Unity
         row = QtWidgets.QHBoxLayout()
-        self.exe = QtWidgets.QLineEdit(self.settings.value("exe", ""))
+        launch = QtWidgets.QPushButton("Unityを起動")
+        launch.clicked.connect(controller.launch_unity)
+        row.addWidget(launch)
+        self.pip = QtWidgets.QCheckBox("PiP（常に手前）")
+        self.pip.setChecked(controller.pip)
+        self.pip.toggled.connect(controller.set_pip)
+        row.addWidget(self.pip)
+        self.visibility = QtWidgets.QPushButton("Unityを隠す")
+        self.visibility.clicked.connect(controller.toggle_unity_window)
+        row.addWidget(self.visibility)
+        row.addStretch(1)
+        self.settings_button = QtWidgets.QToolButton()
+        self.settings_button.setText("設定")
+        self.settings_button.setCheckable(True)
+        row.addWidget(self.settings_button)
+        layout.addLayout(row)
+
+        # settings (folded by default)
+        self.settings_box = QtWidgets.QWidget()
+        box = QtWidgets.QVBoxLayout(self.settings_box)
+        box.setContentsMargins(0, 0, 0, 0)
+        row = QtWidgets.QHBoxLayout()
+        self.exe = QtWidgets.QLineEdit(controller.exe_path)
+        self.exe.setPlaceholderText("PreviewHost.exe のパス")
+        self.exe.editingFinished.connect(lambda: setattr(controller, "exe_path", self.exe.text()))
         row.addWidget(self.exe, 1)
-        for label, action in (("参照", self.browse), ("Unityを起動", self.launch_host)):
+        browse = QtWidgets.QPushButton("参照")
+        browse.clicked.connect(self.browse)
+        row.addWidget(browse)
+        box.addLayout(row)
+        self.auto_sync = QtWidgets.QCheckBox("自動同期")
+        self.auto_sync.setChecked(controller.auto_sync)
+        self.auto_sync.toggled.connect(controller.set_auto_sync)
+        box.addWidget(self.auto_sync)
+        self.settings_box.setVisible(not controller.exe_path)
+        self.settings_button.setChecked(self.settings_box.isVisible())
+        self.settings_button.toggled.connect(self.settings_box.setVisible)
+        layout.addWidget(self.settings_box)
+
+        # sync list
+        layout.addWidget(QtWidgets.QLabel("同期リスト（アウトライナーからドロップ）"))
+        self.list = DropList()
+        self.list.nodes_dropped.connect(controller.add_to_list)
+        self.list.itemDoubleClicked.connect(self.select_in_maya)
+        layout.addWidget(self.list, 1)
+        row = QtWidgets.QHBoxLayout()
+        for label, action in (("選択を追加", controller.add_selection),
+                              ("削除", self.remove_selected),
+                              ("クリア", controller.clear_list),
+                              ("リストを再送信", controller.resend_list)):
             button = QtWidgets.QPushButton(label)
             button.clicked.connect(action)
             row.addWidget(button)
         layout.addLayout(row)
 
-        row = QtWidgets.QHBoxLayout()
-        self.auto_sync = QtWidgets.QCheckBox("自動同期")
-        self.auto_sync.setChecked(self.settings.value("auto_sync", True, type=bool))
-        self.auto_sync.toggled.connect(self.auto_sync_toggled)
-        row.addWidget(self.auto_sync)
-        resend = QtWidgets.QPushButton("全メッシュを再送信")
-        resend.clicked.connect(self.resend_all)
-        row.addWidget(resend)
-        row.addStretch(1)
-        layout.addLayout(row)
-
-        row = QtWidgets.QHBoxLayout()
-        self.pip = QtWidgets.QCheckBox("PiP（常に手前の小窓）")
-        self.pip.setChecked(self.settings.value("pip", False, type=bool))
-        self.pip.toggled.connect(self.apply_pip)
-        row.addWidget(self.pip)
-        self.visibility = QtWidgets.QPushButton("Unityを隠す")
-        self.visibility.clicked.connect(self.toggle_unity_window)
-        row.addWidget(self.visibility)
-        row.addStretch(1)
-        layout.addLayout(row)
-
-        self.status = QtWidgets.QLabel()
+        self.status = QtWidgets.QLabel(controller.status)
         self.status.setWordWrap(True)
         self.status.setTextFormat(QtCore.Qt.PlainText)
         layout.addWidget(self.status)
-        hint = QtWidgets.QLabel("Unityの窓は端をドラッグでサイズ変更 / Unity上でTabキー: Hierarchy・Inspectorの表示切替")
+        hint = QtWidgets.QLabel("Unityの窓は端をドラッグでサイズ変更 / Unity上でTab: UIの表示切替")
         hint.setWordWrap(True)
-        hint.setStyleSheet("color:#999999;")
+        hint.setStyleSheet("color:#8a8a8a;")
         layout.addWidget(hint)
-        self.resize(560, 10)
 
-        self.connection_changed.connect(self.on_connection_changed, QtCore.Qt.QueuedConnection)
-        self.send_finished.connect(self.on_send_finished, QtCore.Qt.QueuedConnection)
-        QtWidgets.QApplication.instance().aboutToQuit.connect(self.shutdown)
+        controller.status_changed.connect(self.status.setText)
+        controller.list_changed.connect(self.refresh_list)
+        controller.unity_visibility_changed.connect(self.update_visibility_button)
+        self.refresh_list()
+        self.resize(360, 420)
 
-        self.monitor_stop = threading.Event()
-        self.monitor = threading.Thread(target=self.monitor_unity, daemon=True)
-        self.monitor.start()
-        self.set_status("Unityの起動を待っています（127.0.0.1:50001）")
-
-    # ------------------------------------------------------------------ Unity process
+    # ------------------------------------------------------------------
     def browse(self):
         filename, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "PreviewHost.exeを選択", self.exe.text(), "Executable (*.exe)")
         if filename:
             self.exe.setText(filename)
-            self.settings.setValue("exe", filename)
+            self.controller.exe_path = filename
 
-    def launch_host(self):
-        path = Path(self.exe.text().strip().strip('"'))
-        if not path.is_file() or path.suffix.lower() != ".exe":
-            self.set_status("PreviewHostの.exeファイルを指定してください。")
-            return
-        if self.connected or (self.process is not None and self.process.poll() is None):
-            self.set_status("Unityは起動済みです。")
-            return
-        try:
-            self.process = subprocess.Popen([str(path)], cwd=str(path.parent))
-        except OSError as error:
-            self.set_status(str(error))
-            return
-        self.settings.setValue("exe", str(path))
-        self.set_status("Unityを起動中… 接続できたら自動で同期を始めます。")
+    def refresh_list(self):
+        self.list.clear()
+        for uuid, name in self.controller.sync_list.items():
+            item = QtWidgets.QListWidgetItem(name.split("|")[-1] if name else "（見つかりません）" + uuid)
+            item.setData(QtCore.Qt.UserRole, uuid)
+            item.setToolTip(name or uuid)
+            if not name:
+                item.setForeground(QtGui.QColor("#777777"))
+            self.list.addItem(item)
 
-    def monitor_unity(self):
-        """Background thread: report when the Unity PreviewHost appears or goes away."""
-        last = None
-        while not self.monitor_stop.is_set():
-            listening = is_listening()
-            if listening != last:
-                last = listening
-                self.connection_changed.emit(listening)
-            self.monitor_stop.wait(MONITOR_INTERVAL)
+    def remove_selected(self):
+        uuids = [item.data(QtCore.Qt.UserRole) for item in self.list.selectedItems()]
+        if uuids:
+            self.controller.remove_from_list(uuids)
 
-    def on_connection_changed(self, connected):
-        self.connected = connected
-        if connected:
-            self.attach_window()
-            if self.auto_sync.isChecked():
-                self.start_sync()
-            else:
-                self.set_status("Unity接続中（自動同期オフ）")
-        else:
-            self.watch.stop()
-            self.unity = None
-            self.normal_rect = None
-            self.set_status("Unity未接続：Unityを起動すると自動で同期を始めます。")
+    def select_in_maya(self, item):
+        names = cmds.ls(item.data(QtCore.Qt.UserRole), long=True) or []
+        if names:
+            cmds.select(names, replace=True)
 
-    # ------------------------------------------------------------------ sync
-    def start_sync(self):
-        if self.watch.active:
-            self.watch.resend_all()
-        else:
-            self.watch.start()
-        self.set_status("自動同期中：メッシュの編集・移動・マテリアル変更をUnityへ送ります。")
-
-    def auto_sync_toggled(self, checked):
-        self.settings.setValue("auto_sync", checked)
-        if checked and self.connected:
-            self.start_sync()
-        elif not checked:
-            self.watch.stop()
-            self.set_status("自動同期オフ" + ("（Unity接続中）" if self.connected else ""))
-
-    def resend_all(self):
-        if not self.connected:
-            self.set_status("Unityが起動していません。")
-        elif self.watch.active:
-            self.watch.resend_all()
-        else:
-            self.flush(cmds.ls(type="mesh", long=True, noIntermediate=True) or [], [])
-
-    def flush(self, paths, removed):
-        """Called by SceneWatch on the main thread. False = busy, retry later."""
-        if self.sending:
-            return False
-        if not self.connected:
-            return True
-        try:
-            messages = [remove_message(name) for name in removed] + meshes_for(paths)
-        except Exception as error:  # a broken mesh must not stop the sync
-            self.set_status("メッシュ取得エラー: " + str(error))
-            return True
-        if not messages:
-            return True
-        self.sending = True
-        names = ", ".join(path.split("|")[-1] for path in paths[:3]) + (" …" if len(paths) > 3 else "")
-        future = self.executor.submit(send_messages, messages, self.cancelled)
-
-        def completed(job):
-            error = job.exception()
-            self.send_finished.emit("送信失敗: " + str(error) if error else
-                                    "同期: " + (names or "削除のみ"))
-        future.add_done_callback(completed)
-        return True
-
-    def on_send_finished(self, message):
-        self.sending = False
-        self.set_status(message)
-
-    # ------------------------------------------------------------------ Unity window (PiP)
-    def attach_window(self):
-        if not unity_window.IS_WINDOWS:
-            return None
-        if self.unity is None or not self.unity.alive():
-            pid = self.process.pid if self.process is not None and self.process.poll() is None else None
-            hwnd = unity_window.find_unity_window(pid=pid, exe_path=self.exe.text().strip().strip('"') or None)
-            self.unity = unity_window.UnityWindow(hwnd) if hwnd else None
-            if self.unity:
-                self.unity.make_resizable()
-                if self.pip.isChecked():
-                    self.apply_pip(True)
-        return self.unity
-
-    def apply_pip(self, enabled):
-        self.settings.setValue("pip", enabled)
-        window = self.attach_window() if self.connected else None
-        if window is None:
-            return
-        if enabled:
-            if self.normal_rect is None:
-                self.normal_rect = window.rect()
-            saved = self.settings.value("pip_rect")
-            rect = [int(v) for v in saved] if saved else window.default_pip_rect(int(self.maya_window.winId()))
-            window.show()
-            window.set_rect(rect)
-            window.set_topmost(True)
-            self.visibility.setText("Unityを隠す")
-        else:
-            self.settings.setValue("pip_rect", window.rect())
-            window.set_topmost(False)
-            if self.normal_rect:
-                window.set_rect(self.normal_rect)
-            self.normal_rect = None
-
-    def toggle_unity_window(self):
-        window = self.attach_window() if self.connected else None
-        if window is None:
-            self.set_status("Unityのウィンドウが見つかりません。")
-            return
-        if window.visible():
-            window.hide()
-            self.visibility.setText("Unityを表示")
-        else:
-            window.show()
-            if self.pip.isChecked():
-                window.set_topmost(True)
-            self.visibility.setText("Unityを隠す")
-
-    # ------------------------------------------------------------------ misc
-    def set_status(self, text):
-        self.status.setText(text)
-
-    def shutdown(self):
-        if self.closed:
-            return
-        self.closed = True
-        self.monitor_stop.set()
-        self.watch.stop()
-        self.cancelled.set()
-        if self.unity is not None and self.unity.alive():
-            if self.pip.isChecked():
-                self.settings.setValue("pip_rect", self.unity.rect())
-            if not self.unity.visible():
-                self.unity.show()   # never leave Unity hidden with no way back
-        self.executor.shutdown(wait=False)
-
-    def closeEvent(self, event):
-        self.settings.setValue("exe", self.exe.text())
-        self.shutdown()
-        super().closeEvent(event)
+    def update_visibility_button(self, visible):
+        self.visibility.setText("Unityを隠す" if visible else "Unityを表示")

@@ -1,4 +1,4 @@
-"""Run with Maya mayapy; offscreen GUI verification (maya.standalone, no Maya UI)."""
+"""Run with Maya mayapy (maya.standalone, offscreen Qt). Checks the sync engine without Unity."""
 import os
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 import sys
@@ -10,35 +10,45 @@ import maya.standalone
 maya.standalone.initialize(name="python")
 from maya import cmds
 from maya_unity_preview.qt import QtWidgets
-from maya_unity_preview.ui import PreviewTool
+from maya_unity_preview.controller import PreviewController
 
 app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 sent = []
-with patch("maya_unity_preview.ui.OpenMayaUI.MQtUtil.mainWindow", return_value=0), \
-     patch("maya_unity_preview.ui.is_listening", return_value=False):
-    window = PreviewTool()
-window.show()
 
-# connected -> SceneWatch starts and the first batch contains every mesh
+
+def pump(controller):
+    controller.watch._on_timer()
+    controller.executor.submit(lambda: None).result()
+    app.processEvents()
+
+
+with patch("maya_unity_preview.controller.is_listening", return_value=False), \
+     patch("maya_unity_preview.controller.unity_window.IS_WINDOWS", False):
+    controller = PreviewController()
 cube = cmds.polyCube(name="smokeCube")[0]
-with patch("maya_unity_preview.ui.send_messages", side_effect=lambda m, c: sent.extend(m)):
-    window.on_connection_changed(True)
-    assert window.watch.active
-    window.watch._on_timer()
-    window.executor.submit(lambda: None).result()
-    app.processEvents()
-    assert any(m["type"] == "MESH_DATA_V2" and m["name"].endswith("smokeCubeShape") for m in sent), sent
+other = cmds.polySphere(name="smokeSphere")[0]
 
-    # rename -> old Unity object removed, new one sent
+with patch("maya_unity_preview.controller.send_messages", side_effect=lambda m, c: sent.extend(m)):
+    controller._on_connection(True)
+    pump(controller)
+    assert not sent, "empty sync list must send nothing"
+
+    controller.add_to_list([cube])
+    pump(controller)
+    names = [m["name"] for m in sent if m["type"] == "MESH_DATA_V2"]
+    assert names and all("smokeCube" in n for n in names), sent
+
     sent.clear()
-    cmds.rename(cube, "smokeCube2")
-    window.watch._on_timer()
-    window.executor.submit(lambda: None).result()
-    app.processEvents()
+    cmds.move(1, 2, 3, cube)
+    pump(controller)
+    assert any(m["type"] == "MESH_DATA_V2" for m in sent), "transform move must sync"
+
+    sent.clear()
+    controller.remove_from_list(controller.sync_list.uuids)
+    pump(controller)
     assert any(m["type"] == "MESH_REMOVE" for m in sent), sent
 
-window.on_connection_changed(False)
-assert not window.watch.active
-window.close()
-assert window.closed
-print("PASS: auto sync start/stop, rename removal, window lifecycle")
+controller._on_connection(False)
+assert not controller.watch.active
+controller.shutdown()
+print("PASS: sync list filter, transform sync, list removal, connection lifecycle")

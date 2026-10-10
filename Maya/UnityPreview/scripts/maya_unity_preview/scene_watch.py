@@ -1,14 +1,21 @@
 """Event-driven mesh sync.
 
 Maya API callbacks only *mark* meshes as changed; a short single-shot Qt timer then hands the
-batch to the tool on the main thread. Nothing is polled: when nothing changes, nothing runs.
+batch to the controller on the main thread. Nothing is polled: when nothing changes, nothing runs.
 
-Watched events
-- mesh edited / transform moved  : node dirty-plug callback on each mesh shape
-- material (shading group) change : attribute-changed callback (instObjGroups connections)
-- mesh renamed                    : name-changed callback (old Unity object is removed)
-- mesh created / deleted          : DG node added / removed callbacks
-- new scene / open scene          : everything is removed in Unity, then re-sent
+Watched events (per mesh shape)
+- transform / parent moved          : MDagMessage world-matrix-modified (works with Evaluation Manager)
+- vertices edited, attributes set   : node dirty-plug + attribute-set callbacks
+- material (shading group) changed  : attribute-changed (instObjGroups connections)
+- renamed                           : name-changed (old Unity object is removed)
+Global events
+- mesh created / deleted            : DG node added / removed
+- manipulator released, undo, redo,
+  time changed                      : every watched target is re-checked
+- new scene / open scene            : everything is removed in Unity, then re-sent
+
+Only meshes for which `is_target(MDagPath)` is True are sent; a mesh that stops being a
+target (removed from the sync list) is removed from Unity.
 """
 from maya import cmds
 from maya.api import OpenMaya as om
@@ -16,6 +23,7 @@ from maya.api import OpenMaya as om
 from .qt import QtCore
 
 BATCH_MS = 120
+RECHECK_EVENTS = ("DragRelease", "Undo", "Redo", "timeChanged")
 
 
 def _remove_callbacks(ids):
@@ -29,9 +37,11 @@ def _remove_callbacks(ids):
 class SceneWatch(QtCore.QObject):
     """flush(paths, removed_names) -> bool. Return False when busy; the batch is retried."""
 
-    def __init__(self, flush, parent=None):
+    def __init__(self, flush, is_target=None, on_scene_opened=None, parent=None):
         super().__init__(parent)
         self._flush = flush
+        self._is_target = is_target or (lambda dag_path: True)
+        self._on_scene_opened = on_scene_opened
         self._watched = {}       # handle hash -> (MObjectHandle, [callback ids])
         self._sent_names = {}    # handle hash -> DAG path last sent to Unity
         self._dirty = {}         # handle hash -> MObjectHandle
@@ -57,6 +67,11 @@ class SceneWatch(QtCore.QObject):
             om.MSceneMessage.addCallback(om.MSceneMessage.kAfterNew, self._after_scene),
             om.MSceneMessage.addCallback(om.MSceneMessage.kAfterOpen, self._after_scene),
         ]
+        for event in RECHECK_EVENTS:
+            try:
+                self._global_callbacks.append(om.MEventMessage.addEventCallback(event, self._recheck))
+            except RuntimeError:
+                pass
         self._watch_all(mark_dirty=True)
 
     def stop(self):
@@ -73,8 +88,13 @@ class SceneWatch(QtCore.QObject):
         self._removed.clear()
         self._sent_names.clear()
 
+    def refresh(self):
+        """Re-evaluate every mesh against is_target (sync list changed / resend requested)."""
+        if self.active:
+            self._watch_all(mark_dirty=True)
+
     def resend_all(self):
-        """Mark every mesh as changed (e.g. after Unity restarted)."""
+        """Forget what Unity has and send every target again."""
         if self.active:
             self._sent_names.clear()
             self._watch_all(mark_dirty=True)
@@ -99,6 +119,12 @@ class SceneWatch(QtCore.QObject):
                 om.MNodeMessage.addAttributeChangedCallback(node, self._attribute_changed),
                 om.MNodeMessage.addNameChangedCallback(node, self._name_changed),
             ]
+            try:
+                dag_path = om.MDagPath.getAPathTo(node)
+                ids.append(om.MDagMessage.addWorldMatrixModifiedCallback(
+                    dag_path, lambda *_args, h=handle: self._mark(h)))
+            except RuntimeError:
+                pass   # node not in the DAG yet (just created); dirty / attribute callbacks still work
             self._watched[key] = (handle, ids)
         if mark_dirty:
             self._mark(handle)
@@ -113,11 +139,18 @@ class SceneWatch(QtCore.QObject):
         self._mark(om.MObjectHandle(node))
 
     def _attribute_changed(self, message, plug, other_plug, *_):
-        if message & (om.MNodeMessage.kConnectionMade | om.MNodeMessage.kConnectionBroken):
+        if message & (om.MNodeMessage.kConnectionMade | om.MNodeMessage.kConnectionBroken
+                      | om.MNodeMessage.kAttributeSet):
             self._mark(om.MObjectHandle(plug.node()))
 
     def _name_changed(self, node, previous_name, *_):
         self._mark(om.MObjectHandle(node))
+
+    def _recheck(self, *_):
+        for key in list(self._sent_names):
+            entry = self._watched.get(key)
+            if entry:
+                self._mark(entry[0])
 
     def _node_added(self, node, *_):
         if self.active:
@@ -145,6 +178,8 @@ class SceneWatch(QtCore.QObject):
         self._on_timer()
 
     def _after_scene(self, *_):
+        if self._on_scene_opened:
+            self._on_scene_opened()
         if self.active:
             self._watch_all(mark_dirty=True)
 
@@ -154,19 +189,25 @@ class SceneWatch(QtCore.QObject):
         self._stale_callbacks = []
         if not self.active:
             return
-        paths, renamed_from, keys = [], set(), []
+        paths, renamed_from, sent, dropped = [], set(), [], []
         for key, handle in list(self._dirty.items()):
             if not handle.isValid() or not handle.isAlive():
                 continue
             node = handle.object()
             if om.MFnDagNode(node).isIntermediateObject:
                 continue
-            path = om.MDagPath.getAPathTo(node).fullPathName()
+            dag_path = om.MDagPath.getAPathTo(node)
+            path = dag_path.fullPathName()
             previous = self._sent_names.get(key)
+            if not self._is_target(dag_path):
+                if previous:
+                    renamed_from.add(previous)   # no longer in the sync list -> remove in Unity
+                    dropped.append(key)
+                continue
             if previous and previous != path:
                 renamed_from.add(previous)
             paths.append(path)
-            keys.append((key, path))
+            sent.append((key, path))
         removed = (self._removed | renamed_from) - set(paths)
         if not paths and not removed:
             self._dirty.clear()
@@ -176,5 +217,7 @@ class SceneWatch(QtCore.QObject):
             return
         self._dirty.clear()
         self._removed.clear()
-        for key, path in keys:
+        for key in dropped:
+            self._sent_names.pop(key, None)
+        for key, path in sent:
             self._sent_names[key] = path

@@ -1,18 +1,27 @@
 """Public launcher entry point. Maya imports are deferred until show()."""
-_window = None
+_controller = None
+
+
+def controller():
+    """The sync engine lives as long as Maya; the panel can be closed and reopened."""
+    global _controller
+    if _controller is None:
+        from .controller import PreviewController
+        _controller = PreviewController()
+    return _controller
 
 
 def show():
-    global _window
-    from .ui import PreviewTool
-    if _window is None or _window.closed:
-        _window = PreviewTool()
-    _window.show()
-    _window.raise_()
-    _window.activateWindow()
+    from maya import cmds
+    from .ui import PreviewPanel
+    workspace = PreviewPanel.OBJECT_NAME + "WorkspaceControl"
+    if cmds.workspaceControl(workspace, query=True, exists=True):
+        cmds.deleteUI(workspace)
+    panel = PreviewPanel(controller())
+    panel.show(dockable=True, floating=True, retain=False)
+    return panel
 
 
 def toggle_unity_window():
     """Hide / show the Unity preview window (assign this to a Maya hotkey or shelf button)."""
-    if _window is not None and not _window.closed:
-        _window.toggle_unity_window()
+    controller().toggle_unity_window()

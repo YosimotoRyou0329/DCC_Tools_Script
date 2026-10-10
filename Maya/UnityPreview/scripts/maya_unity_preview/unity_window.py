@@ -102,6 +102,15 @@ def find_unity_window(pid=None, exe_path=None):
     return None
 
 
+def is_usable_rect(rect):
+    """False for a minimized window's rect (-32000, -32000, 160, 28), garbage or anything tiny."""
+    try:
+        x, y, width, height = (int(v) for v in rect)
+    except (TypeError, ValueError):
+        return False
+    return x > -10000 and y > -10000 and width >= 320 and height >= 180
+
+
 class UnityWindow:
     def __init__(self, hwnd):
         self.hwnd = hwnd
@@ -157,6 +166,8 @@ class UnityWindow:
         client_width, client_height = self.client_size()
         frame_width, frame_height = window_width - client_width, window_height - client_height
         ratio = client_width / float(client_height) if client_height > 0 else 16 / 9.0
+        if client_width < 160 or client_height < 90:   # minimized: sizes are meaningless
+            frame_width, frame_height, ratio = 16, 39, 16 / 9.0
         pip_client_width = max(320, width // 4)
         pip_width = pip_client_width + frame_width
         pip_height = int(round(pip_client_width / ratio)) + frame_height

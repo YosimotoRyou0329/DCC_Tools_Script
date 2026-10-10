@@ -14,7 +14,7 @@ Unityの既存PreviewHostに接続します。Maya 2027本体での実機確認�
 Unityが起動して接続できると、同期リストのメッシュを送り、以後は変更を自動で同期します。
 Unityを手動で起動した場合も1秒以内に検知します。送信ボタンは不要です。
 パネルは他のパネルにドッキング・タブ化・閉じることができ、閉じても同期は続きます
-（同期エンジン `controller.py` はMaya終了まで常駐）。
+（同期エンジン `engine.py` はMaya終了まで常駐）。
 
 ## 同期リスト
 
@@ -72,7 +72,7 @@ Mayaではモデリングとテクスチャ貼りまでをいつも通り行い�
 
 - `tool.json`: ツール名・対応Maya・Pythonパス・起動関数。
 - `scripts/maya_unity_preview/__init__.py`: `show()`（パネル） / `controller()`（常駐エンジン）。
-- `controller.py`: Unity起動・接続監視、同期、同期リスト操作、Unityの窓操作。
+- `engine.py`: Unity起動・接続監視、同期、同期リスト操作、Unityの窓操作。
 - `ui.py`: ドッキング可能なパネル（表示と操作のみ）。
 - `scene_watch.py`: Mayaのコールバックで変更されたメッシュを集める。
 - `sync_list.py`: 同期リスト（シーン保存・対象判定）。

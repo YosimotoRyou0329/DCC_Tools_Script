@@ -287,21 +287,28 @@ class PreviewController(QtCore.QObject):
         if window is None:
             return
         if enabled:
-            if self.normal_rect is None:
+            if self.normal_rect is None and unity_window.is_usable_rect(window.rect()):
                 self.normal_rect = window.rect()
             saved = self.settings.value("pip_rect")
             maya_hwnd = int(wrapInstance(int(OpenMayaUI.MQtUtil.mainWindow()), QtWidgets.QWidget).winId())
-            rect = [int(v) for v in saved] if saved else window.default_pip_rect(maya_hwnd)
+            # a rect saved while Unity was minimized (-32000, -32000, ...) would put it off screen
+            usable = unity_window.is_usable_rect(saved)
+            rect = [int(v) for v in saved] if usable else window.default_pip_rect(maya_hwnd)
             window.show()
             window.set_rect(rect)
             window.set_topmost(True)
             self.unity_visibility_changed.emit(True)
         else:
-            self.settings.setValue("pip_rect", window.rect())
+            self._save_pip_rect(window)
             window.set_topmost(False)
             if self.normal_rect:
                 window.set_rect(self.normal_rect)
             self.normal_rect = None
+
+    def _save_pip_rect(self, window):
+        rect = window.rect()
+        if unity_window.is_usable_rect(rect):   # never remember a minimized / off-screen rect
+            self.settings.setValue("pip_rect", rect)
 
     def toggle_unity_window(self):
         window = self._attach_window()
@@ -330,7 +337,7 @@ class PreviewController(QtCore.QObject):
         self.cancelled.set()
         if self.unity is not None and self.unity.alive():
             if self.pip:
-                self.settings.setValue("pip_rect", self.unity.rect())
+                self._save_pip_rect(self.unity)
             if not self.unity.visible():
                 self.unity.show()   # never leave Unity hidden with no way back
         self.executor.shutdown(wait=False)

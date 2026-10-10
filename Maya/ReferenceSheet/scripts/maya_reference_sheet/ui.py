@@ -65,6 +65,7 @@ class ReferenceSheetPanel(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.config.setdefault("landmarks", layout.default_landmarks())
         self.config.setdefault("master", "front")
         self.config.setdefault("show_guides", True)
+        self._enforce_align_limit()
         self.fits, self.targets, self.master = {}, {}, None
         self.pixmaps = {}
         self.current = "front"
@@ -155,9 +156,9 @@ class ReferenceSheetPanel(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.landmark_list.setMaximumHeight(64)
         self.landmark_list.itemChanged.connect(self.landmark_toggled)
         box.addWidget(self.landmark_list)
-        note = QtWidgets.QLabel("チェックしたガイド線が全画像で同じ高さになるよう、基準画像に合わせて"
-                                "画像ごとの拡大率と高さを決めます（2本以上で拡大率も自動・縦横比は不変）。"
-                                "点線は基準画像の線の位置です。")
+        note = QtWidgets.QLabel("揃える線は2本まで。チェックした線は全画像で基準画像（★）とぴったり一致します"
+                                "（1本 = 高さだけ / 2本 = 拡大率と高さ）。画像は縦横同じ倍率なので崩れません。"
+                                "3本目をチェックすると、先にチェックした線が外れます。点線は基準画像の線の位置です。")
         note.setWordWrap(True)
         note.setStyleSheet("color:#9a9a9a;")
         box.addWidget(note)
@@ -362,7 +363,7 @@ class ReferenceSheetPanel(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     def _compute_fits(self):
         views = self._views_guides()
-        align = [l["key"] for l in self.config["landmarks"] if l.get("align")]
+        align = layout.aligned_keys(self.config["landmarks"])
         master = self.config.get("master", "front")
         self.master = master if master in views else next((v for v in layout.VIEWS if v in views), None)
         try:
@@ -388,7 +389,11 @@ class ReferenceSheetPanel(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         names = {l["key"]: l["name"] for l in self.config["landmarks"]}
         unit = builder.unit_label()
         parts = ["{} {:+.2f}".format(names.get(k, k), e) for k, e in fit["residuals"].items()]
-        return ("ずれ: " + " / ".join(parts) + " " + unit) if parts else "揃えるガイド線がありません"
+        if not parts:
+            return "揃えるガイド線がありません"
+        if all(abs(e) < 1e-6 for e in fit["residuals"].values()):
+            return "✓ " + " / ".join(names.get(k, k) for k in fit["residuals"]) + " が基準と一致"
+        return "ずれ: " + " / ".join(parts) + " " + unit
 
     # ------------------------------------------------------------------ landmarks
     def _fill_landmark_list(self):
@@ -408,11 +413,26 @@ class ReferenceSheetPanel(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     def landmark_toggled(self, item):
         key = item.data(QtCore.Qt.UserRole)
+        checked = item.checkState() == QtCore.Qt.Checked
         for landmark in self.config["landmarks"]:
             if landmark["key"] == key:
-                landmark["align"] = item.checkState() == QtCore.Qt.Checked
+                landmark["align"] = checked
+                if checked:
+                    landmark["order"] = self._next_order()
+        self._enforce_align_limit()
         self.save()
         self.refresh()
+
+    def _next_order(self):
+        return max([l.get("order", i) for i, l in enumerate(self.config["landmarks"])] + [0]) + 1
+
+    def _enforce_align_limit(self):
+        """At most 2 aligned lines: 2 points fix scale and height exactly (no stretching).
+        The lines checked first are released (list position when no order is stored)."""
+        aligned = [(l.get("order", i), l) for i, l in enumerate(self.config["landmarks"]) if l.get("align")]
+        aligned.sort(key=lambda pair: pair[0])
+        for _, landmark in aligned[:-2]:
+            landmark["align"] = False
 
     def fill_add_menu(self):
         self.add_menu.clear()
@@ -435,8 +455,10 @@ class ReferenceSheetPanel(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     def add_landmark(self, key, name, ratio):
         color = layout.LANDMARK_COLORS[len(self.config["landmarks"]) % len(layout.LANDMARK_COLORS)]
-        landmark = {"key": key, "name": name, "align": True, "color": color, "ratio": ratio}
+        landmark = {"key": key, "name": name, "align": True, "color": color, "ratio": ratio,
+                    "order": self._next_order()}
         self.config["landmarks"].append(landmark)
+        self._enforce_align_limit()
         for view in layout.VIEWS:
             self._place_landmark(view, landmark)
         self.save()

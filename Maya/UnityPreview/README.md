@@ -39,14 +39,35 @@ Maya APIのコールバックで変更を検知し、120ms以内の変更をま�
 
 送信中に来た変更は積み上げず、送信完了後に最新の状態を送ります。
 
+## マテリアル（Mayaで作り、UnityのexeでShaderを確認）
+
+パネルの「マテリアル」欄で、同期リストのオブジェクトが使うマテリアルを編集します。
+
+- `新規`: 選択中のオブジェクト / フェースに新しいマテリアル（lambert）を作って割り当て。
+- `Unityシェーダー`: exeに含まれるShaderから選択（HDRP/Lit + Unityの一覧のMaterialが使うShader）。
+  未指定なら、Unityに同名のMaterialがあればそれを使い、無ければHDRP/Lit。
+- `ベースカラー` / `ノーマル`: Mayaのfileノードとして接続（ノーマルはbump2d・Tangent Space）。
+  MayaのビューポートでUV展開・テクスチャの貼り具合を確認できます。
+- その他のテクスチャ枠（Shaderごとに自動表示）はマテリアルの `unityTextures` に保存。
+- テクスチャファイルを上書き保存（Substanceの再書き出し等）すると、Maya・Unityとも自動で再読込。
+- Unity側はテクスチャをファイルから直接読みます（PNG / JPG）。Unityのアセットにはまだ書き出しません。
+
+送信内容: `{"type":"MATERIAL_DEF","name":"MT_Body","template":"Shader Graphs/SHG_NTE_Cloth",
+"baseColor":[1,1,1,1],"textures":[{"prop":"@base","path":"C:/.../body.png"},{"prop":"@normal","path":"..."}]}`
+（`@base` / `@normal` はShaderのメイン / ノーマル枠に読み替え）。変化した時だけ、メッシュより先に送ります。
+テンプレート一覧は接続時に `{"type":"GET_TEMPLATES"}` で取得（Unityが1行で応答）。
+
 ## Unityの窓（PiP）
 
 - Unityの窓は端をドラッグしてサイズ変更できます（ツールが窓枠を付けます）。
 - `PiP（常に手前）`: 常に手前・画面右下の小窓にします。位置とサイズは記憶されます。
 - `Unityを隠す / 表示`: Unityを終了せずに隠します。ホットキーに割り当てる場合:
   `import maya_unity_preview; maya_unity_preview.toggle_unity_window()`
-- Unity側のUI: 右上の `Hierarchy` / `Inspector` ボタンで一覧を開閉。GUIは窓の大きさに合わせて縮小。
-  `Tab` で全UIの表示・非表示。座標軸の表示は左下。
+- Unityの窓は画面比率固定。サイズ変更は四隅のドラッグのみ（比率を保ったまま）。
+  最大化などで比率が合わない時は黒帯を表示。
+- Unity側のUI: 左上 `Hierarchy`・`View`、右上 `Inspector`。GUIは窓の大きさに合わせて縮小。
+  `View`: 画面比率（16:9 / 16:10 / 4:3 / 21:9 / 1:1）、`Reset ratio`、窓の幅プリセット。
+  `Tab` で全UIの表示・非表示。
 - Mayaを終了する時、隠していたUnityは再表示されます。
 
 ## 責務
@@ -57,8 +78,9 @@ Maya APIのコールバックで変更を検知し、120ms以内の変更をま�
 - `ui.py`: ドッキング可能なパネル（表示と操作のみ）。
 - `scene_watch.py`: Mayaのコールバックで変更されたメッシュを集める。
 - `sync_list.py`: 同期リスト（シーン保存・対象判定）。
+- `material.py`: Mayaマテリアル ⇔ MATERIAL_DEF、テクスチャ接続の編集。
 - `mesh.py` / `mesh_payload.py`: メッシュ取得 / 送信データ作成（後者はMaya非依存）。
-- `transport.py`: TCP送信と接続確認。Maya/Qtに依存しない。
+- `transport.py`: TCP送信・問い合わせ・接続確認。Maya/Qtに依存しない。
 - `unity_window.py`: Win32でUnityの窓を操作（サイズ変更・最前面・表示切替）。
 - Mayaメニュー生成はこのリポジトリではなく、bat側の `dcc_maya_menu.py`。
 

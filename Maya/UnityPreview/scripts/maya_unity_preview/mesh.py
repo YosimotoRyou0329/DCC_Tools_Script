@@ -8,24 +8,7 @@ from maya import cmds
 from maya.api import OpenMaya as om
 
 from .mesh_payload import build_payload
-
-UNITY_MATERIAL_ATTR = "unityMaterial"
-
-
-def _short_name(node):
-    return node.split("|")[-1].split(":")[-1]
-
-
-def _material_name(shading_engine):
-    shaders = cmds.listConnections(shading_engine + ".surfaceShader", source=True, destination=False) or []
-    if not shaders:
-        return ""
-    material = shaders[0]
-    if cmds.attributeQuery(UNITY_MATERIAL_ATTR, node=material, exists=True):
-        value = cmds.getAttr(material + "." + UNITY_MATERIAL_ATTR)
-        if value:
-            return str(value).strip()
-    return _short_name(material)
+from .material import material_of, unity_name
 
 
 def _extract(shape):
@@ -41,7 +24,8 @@ def _extract(shape):
     triangle_counts, triangle_vertices = mesh.getTriangles()
 
     shading_engines, face_materials = mesh.getConnectedShaders(dag.instanceNumber())
-    material_names = [_material_name(om.MFnDependencyNode(engine).name()) for engine in shading_engines]
+    materials = [material_of(om.MFnDependencyNode(engine).name()) for engine in shading_engines]
+    material_names = [unity_name(m) if m else "" for m in materials]
 
     uvs = uv_counts = uv_ids = None
     uv_set = mesh.currentUVSetName()
@@ -51,9 +35,12 @@ def _extract(shape):
         uv_counts, uv_ids = mesh.getAssignedUVs(uv_set)
         uv_counts, uv_ids = list(uv_counts), list(uv_ids)
 
-    return build_payload(shape, points, normals, list(normal_ids), list(vertex_counts), list(vertex_list),
-                         list(triangle_counts), list(triangle_vertices), list(face_materials), material_names,
-                         uvs, uv_counts, uv_ids)
+    payload = build_payload(shape, points, normals, list(normal_ids), list(vertex_counts), list(vertex_list),
+                            list(triangle_counts), list(triangle_vertices), list(face_materials), material_names,
+                            uvs, uv_counts, uv_ids)
+    # Maya material nodes used by this mesh (removed by the controller before sending)
+    payload["_materials"] = [m for m in dict.fromkeys(materials) if m]
+    return payload
 
 
 def selected_meshes():

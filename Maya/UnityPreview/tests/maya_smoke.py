@@ -37,6 +37,14 @@ with patch("maya_unity_preview.controller.send_messages", side_effect=lambda m, 
     pump(controller)
     names = [m["name"] for m in sent if m["type"] == "MESH_DATA_V2"]
     assert names and all("smokeCube" in n for n in names), sent
+    assert any(m["type"] == "MATERIAL_DEF" for m in sent), "material definition must be sent with the mesh"
+
+    sent.clear()
+    material = controller.create_material("MT_Smoke", "HDRP/Lit")
+    cmds.sets(cube, edit=True, forceElement=material + "SG")
+    pump(controller)
+    defs = [m for m in sent if m["type"] == "MATERIAL_DEF"]
+    assert defs and defs[0]["name"] == "MT_Smoke" and defs[0]["template"] == "HDRP/Lit", sent
 
     sent.clear()
     cmds.move(1, 2, 3, cube)
@@ -51,4 +59,4 @@ with patch("maya_unity_preview.controller.send_messages", side_effect=lambda m, 
 controller._on_connection(False)
 assert not controller.watch.active
 controller.shutdown()
-print("PASS: sync list filter, transform sync, list removal, connection lifecycle")
+print("PASS: sync list filter, material defs, transform sync, list removal, connection lifecycle")

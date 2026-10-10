@@ -38,6 +38,7 @@ if IS_WINDOWS:
     _declare(_user32.SetWindowPos, [wt.HWND, wt.HWND, ctypes.c_int, ctypes.c_int,
                                     ctypes.c_int, ctypes.c_int, wt.UINT], wt.BOOL)
     _declare(_user32.GetWindowRect, [wt.HWND, ctypes.POINTER(wt.RECT)], wt.BOOL)
+    _declare(_user32.GetClientRect, [wt.HWND, ctypes.POINTER(wt.RECT)], wt.BOOL)
     _declare(_user32.ShowWindow, [wt.HWND, ctypes.c_int], wt.BOOL)
     _declare(_user32.MonitorFromWindow, [wt.HWND, wt.DWORD], wt.HMONITOR)
     _declare(_user32.GetMonitorInfoW, [wt.HMONITOR, ctypes.POINTER(_MONITORINFO)], wt.BOOL)
@@ -144,10 +145,21 @@ class UnityWindow:
         w = info.rcWork
         return [w.left, w.top, w.right - w.left, w.bottom - w.top]
 
+    def client_size(self):
+        r = wt.RECT()
+        _user32.GetClientRect(self.hwnd, ctypes.byref(r))
+        return r.right - r.left, r.bottom - r.top
+
     def default_pip_rect(self, near_hwnd=None, margin=24):
+        """Bottom-right of the monitor, a quarter of its width, keeping Unity's current ratio."""
         x, y, width, height = self.work_area(near_hwnd)
-        pip_width = max(320, width // 4)
-        pip_height = pip_width * 9 // 16 + 32
+        _, _, window_width, window_height = self.rect()
+        client_width, client_height = self.client_size()
+        frame_width, frame_height = window_width - client_width, window_height - client_height
+        ratio = client_width / float(client_height) if client_height > 0 else 16 / 9.0
+        pip_client_width = max(320, width // 4)
+        pip_width = pip_client_width + frame_width
+        pip_height = int(round(pip_client_width / ratio)) + frame_height
         return [x + width - pip_width - margin, y + height - pip_height - margin, pip_width, pip_height]
 
     def hide(self):

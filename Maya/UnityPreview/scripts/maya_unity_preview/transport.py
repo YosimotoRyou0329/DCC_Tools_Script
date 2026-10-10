@@ -30,3 +30,13 @@ def send_messages(messages, cancelled=None, host=HOST, port=PORT):
 
 def remove_message(name):
     return {"type": "MESH_REMOVE", "name": name}
+
+
+def request(message, host=HOST, port=PORT, timeout=2.0):
+    """Send one JSON line and read one JSON line back (e.g. GET_TEMPLATES)."""
+    payload = (json.dumps(message, separators=(",", ":")) + "\n").encode("utf-8")
+    with socket.create_connection((host, port), timeout=timeout) as connection:
+        connection.sendall(payload)
+        with connection.makefile("r", encoding="utf-8") as reader:
+            line = reader.readline()
+    return json.loads(line) if line.strip() else {}

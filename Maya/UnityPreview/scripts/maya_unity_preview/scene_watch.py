@@ -13,6 +13,8 @@ Global events
 - manipulator released, undo, redo,
   time changed                      : every watched target is re-checked
 - new scene / open scene            : everything is removed in Unity, then re-sent
+Dependencies (set by the controller after each send)
+- material / file / bump2d node changed : every mesh using it is re-sent (with its MATERIAL_DEF)
 
 Only meshes for which `is_target(MDagPath)` is True are sent; a mesh that stops being a
 target (removed from the sync list) is removed from Unity.
@@ -46,6 +48,7 @@ class SceneWatch(QtCore.QObject):
         self._sent_names = {}    # handle hash -> DAG path last sent to Unity
         self._dirty = {}         # handle hash -> MObjectHandle
         self._removed = set()    # Unity names to remove
+        self._deps = {}          # dependency hash -> (MObjectHandle, [callback ids], {mesh hashes})
         self._stale_callbacks = []
         self._global_callbacks = []
         self.active = False
@@ -81,6 +84,9 @@ class SceneWatch(QtCore.QObject):
         self._global_callbacks = []
         for _, ids in self._watched.values():
             _remove_callbacks(ids)
+        for _, ids, _meshes in self._deps.values():
+            _remove_callbacks(ids)
+        self._deps.clear()
         _remove_callbacks(self._stale_callbacks)
         self._watched.clear()
         self._stale_callbacks = []
@@ -98,6 +104,50 @@ class SceneWatch(QtCore.QObject):
         if self.active:
             self._sent_names.clear()
             self._watch_all(mark_dirty=True)
+
+    # ------------------------------------------------------------------ dependencies (materials)
+    def set_dependencies(self, mesh_path, nodes):
+        """Re-send mesh_path whenever one of `nodes` (material, file, bump2d...) changes."""
+        if not self.active:
+            return
+        mesh_key = self._key_of(mesh_path)
+        if mesh_key is None:
+            return
+        for name in nodes:
+            selection = om.MSelectionList()
+            try:
+                selection.add(name)
+            except RuntimeError:
+                continue
+            node = selection.getDependNode(0)
+            handle = om.MObjectHandle(node)
+            dep_key = handle.hashCode()
+            if dep_key not in self._deps:
+                callback = om.MNodeMessage.addAttributeChangedCallback(
+                    node, lambda *_args, d=dep_key: self.mark_dependents(d))
+                self._deps[dep_key] = (handle, [callback], set())
+            self._deps[dep_key][2].add(mesh_key)
+
+    def mark_dependents(self, dep):
+        """dep: dependency hash or node name. Marks every mesh that uses it."""
+        if not isinstance(dep, int):
+            dep = self._key_of(dep)
+        entry = self._deps.get(dep)
+        if not entry:
+            return
+        for mesh_key in entry[2]:
+            watched = self._watched.get(mesh_key)
+            if watched:
+                self._mark(watched[0])
+
+    @staticmethod
+    def _key_of(name):
+        selection = om.MSelectionList()
+        try:
+            selection.add(name)
+        except RuntimeError:
+            return None
+        return om.MObjectHandle(selection.getDependNode(0)).hashCode()
 
     # ------------------------------------------------------------------ watching
     def _watch_all(self, mark_dirty):
@@ -174,7 +224,10 @@ class SceneWatch(QtCore.QObject):
         self._dirty.clear()
         for _, ids in self._watched.values():
             self._stale_callbacks.extend(ids)
+        for _, ids, _meshes in self._deps.values():
+            self._stale_callbacks.extend(ids)
         self._watched.clear()
+        self._deps.clear()
         self._on_timer()
 
     def _after_scene(self, *_):

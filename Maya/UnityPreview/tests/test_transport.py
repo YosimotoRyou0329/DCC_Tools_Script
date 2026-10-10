@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from maya_unity_preview.transport import is_listening, send_messages, remove_message
+from maya_unity_preview.transport import is_listening, send_messages, remove_message, request
 
 
 class TransportTests(unittest.TestCase):
@@ -39,6 +39,20 @@ class TransportTests(unittest.TestCase):
         worker.join(3)
         self.assertEqual(received, [{"type": "MESH_DATA_V2", "name": "a"},
                                     {"type": "MESH_REMOVE", "name": "|b|bShape"}])
+
+    def test_request_reads_one_reply_line(self):
+        def answer():
+            client, _ = self.server.accept()
+            with client, client.makefile("rw", encoding="utf-8") as stream:
+                assert json.loads(stream.readline())["type"] == "GET_TEMPLATES"
+                stream.write(json.dumps({"type": "TEMPLATES", "templates": [{"name": "HDRP/Lit"}]}) + "\n")
+                stream.flush()
+
+        worker = threading.Thread(target=answer)
+        worker.start()
+        reply = request({"type": "GET_TEMPLATES"}, port=self.port)
+        worker.join(3)
+        self.assertEqual(reply["templates"][0]["name"], "HDRP/Lit")
 
     def test_cancelled_sends_nothing(self):
         event = threading.Event()

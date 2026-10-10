@@ -3,7 +3,11 @@
 - watches for the Unity PreviewHost (started here or by hand) and starts syncing when it appears
 - SceneWatch reports changed meshes; only meshes in the SyncList are sent
 - controls the Unity window (resizable, PiP, hide / show)
+- materials: MATERIAL_DEF is sent with the meshes that use a material (only when it changed);
+  texture files are watched on disk, so re-exporting from Substance updates Maya and Unity
 """
+import json
+import os
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -15,7 +19,8 @@ from .qt import QtCore, QtWidgets, wrapInstance
 from .mesh import meshes_for
 from .scene_watch import SceneWatch
 from .sync_list import SyncList
-from .transport import is_listening, send_messages, remove_message
+from .transport import is_listening, send_messages, remove_message, request
+from . import material as mat
 from . import unity_window
 
 MONITOR_INTERVAL = 1.0
@@ -26,6 +31,8 @@ class PreviewController(QtCore.QObject):
     connection_changed = QtCore.Signal(bool)
     list_changed = QtCore.Signal()
     unity_visibility_changed = QtCore.Signal(bool)
+    templates_changed = QtCore.Signal()
+    _templates_received = QtCore.Signal(list)
     _connection_detected = QtCore.Signal(bool)
     _send_finished = QtCore.Signal(str)
 
@@ -41,6 +48,18 @@ class PreviewController(QtCore.QObject):
         self.unity = None
         self.normal_rect = None
         self.sync_list = SyncList()
+        self.templates = []          # [{"name", "baseProp", "normalProp", "textures": [{"prop", "label"}]}]
+        self._sent_defs = {}         # Unity material name -> JSON last sent
+        self._def_nodes = {}         # Unity material name -> Maya material node
+        self._texture_users = {}     # normalised texture path -> {Unity material names}
+        self._texture_watcher = QtCore.QFileSystemWatcher(self)
+        self._texture_watcher.fileChanged.connect(self._texture_changed)
+        self._changed_textures = set()
+        self._texture_timer = QtCore.QTimer(self)
+        self._texture_timer.setSingleShot(True)
+        self._texture_timer.setInterval(400)    # exporters write in several chunks
+        self._texture_timer.timeout.connect(self._reload_textures)
+        self._templates_received.connect(self._on_templates, QtCore.Qt.QueuedConnection)
         self.watch = SceneWatch(self._flush, self.sync_list.contains, self._scene_opened, self)
         self._connection_detected.connect(self._on_connection, QtCore.Qt.QueuedConnection)
         self._send_finished.connect(self._on_sent, QtCore.Qt.QueuedConnection)
@@ -95,6 +114,7 @@ class PreviewController(QtCore.QObject):
         self.connected = connected
         if connected:
             self._attach_window()
+            threading.Thread(target=self._fetch_templates, daemon=True).start()
             if self.auto_sync:
                 self._start_sync()
             else:
@@ -107,7 +127,20 @@ class PreviewController(QtCore.QObject):
         self.connection_changed.emit(connected)
 
     # ------------------------------------------------------------------ sync
+    def _fetch_templates(self):
+        try:
+            reply = request({"type": "GET_TEMPLATES"})
+            templates = reply.get("templates", []) if isinstance(reply, dict) else []
+        except (OSError, ValueError):
+            templates = []
+        self._templates_received.emit(templates)
+
+    def _on_templates(self, templates):
+        self.templates = templates
+        self.templates_changed.emit()
+
     def _start_sync(self):
+        self._sent_defs.clear()      # Unity (re)started: it knows no Maya material yet
         if self.watch.active:
             self.watch.resend_all()
         else:
@@ -150,7 +183,9 @@ class PreviewController(QtCore.QObject):
         if not self.connected:
             return True
         try:
-            messages = [remove_message(name) for name in removed] + meshes_for(paths)
+            meshes = meshes_for(paths)
+            definitions = self._material_messages(meshes)
+            messages = [remove_message(name) for name in removed] + definitions + meshes
         except Exception as error:  # a broken mesh must not stop the sync
             self._set_status("メッシュ取得エラー: " + str(error))
             return True
@@ -166,6 +201,76 @@ class PreviewController(QtCore.QObject):
                                      "同期: " + (names or "削除のみ"))
         future.add_done_callback(completed)
         return True
+
+    def _material_messages(self, meshes):
+        """MATERIAL_DEF for materials used by these meshes (only the ones that changed)."""
+        result, deps_of = [], {}
+        for material in dict.fromkeys(m for payload in meshes for m in payload.get("_materials", [])):
+            data, deps, textures = mat.definition(material)
+            deps_of[material] = deps
+            name = data["name"]
+            self._def_nodes[name] = material
+            for path in textures:
+                key = os.path.normcase(os.path.normpath(path))
+                self._texture_users.setdefault(key, set()).add(name)
+                if os.path.isfile(path) and path not in self._texture_watcher.files():
+                    self._texture_watcher.addPath(path)
+            text = json.dumps(data, sort_keys=True)
+            if self._sent_defs.get(name) != text:
+                self._sent_defs[name] = text
+                result.append(data)
+        for payload in meshes:
+            used = payload.pop("_materials", [])
+            self.watch.set_dependencies(payload["name"], [d for m in used for d in deps_of.get(m, [])])
+        return result
+
+    def _texture_changed(self, path):
+        self._changed_textures.add(path)
+        self._texture_timer.start()
+
+    def _reload_textures(self):
+        """A texture file changed on disk: reload it in Maya and re-send the materials using it."""
+        changed, self._changed_textures = self._changed_textures, set()
+        for path in changed:
+            if os.path.isfile(path) and path not in self._texture_watcher.files():
+                self._texture_watcher.addPath(path)    # some exporters replace the file
+            mat.reload_file_nodes(path)
+            for name in self._texture_users.get(os.path.normcase(os.path.normpath(path)), ()):
+                self._sent_defs.pop(name, None)
+                node = self._def_nodes.get(name)
+                if node and cmds.objExists(node):
+                    self.watch.mark_dependents(node)
+        if changed:
+            self._set_status("テクスチャ更新: " + ", ".join(os.path.basename(p) for p in changed))
+
+    # ------------------------------------------------------------------ material editing (panel)
+    def materials_in_list(self):
+        paths = [p for p in cmds.ls(type="mesh", long=True, noIntermediate=True) or []
+                 if self._is_target_path(p)]
+        return mat.materials_of_meshes(paths)
+
+    def create_material(self, name, template):
+        targets = cmds.ls(selection=True, long=True) or []
+        material = mat.create_material(name, template, targets)
+        self._set_status("マテリアル作成: " + material + ("" if targets else "（割り当てなし）"))
+        return material
+
+    def set_template(self, material, template):
+        mat.set_template(material, template)
+
+    def set_texture(self, material, slot, path):
+        if slot == "@base":
+            mat.set_base_texture(material, path)
+        elif slot == "@normal":
+            mat.set_normal_texture(material, path)
+        else:
+            mat.set_extra_texture(material, slot, path)
+
+    def template(self, name):
+        for template in self.templates:
+            if template.get("name") == name:
+                return template
+        return None
 
     def _on_sent(self, message):
         self.sending = False

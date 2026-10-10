@@ -39,12 +39,7 @@ with patch("maya_unity_preview.controller.send_messages", side_effect=lambda m, 
     assert names and all("smokeCube" in n for n in names), sent
     assert any(m["type"] == "MATERIAL_DEF" for m in sent), "material definition must be sent with the mesh"
 
-    sent.clear()
-    material = controller.create_material("MT_Smoke", "HDRP/Lit")
-    cmds.sets(cube, edit=True, forceElement=material + "SG")
-    pump(controller)
-    defs = [m for m in sent if m["type"] == "MATERIAL_DEF"]
-    assert defs and defs[0]["name"] == "MT_Smoke" and defs[0]["template"] == "HDRP/Lit", sent
+    assert sent[0]["type"] == "SESSION" and sent[0]["materialFolder"].endswith("unityPreview/materials"), sent[0]
 
     sent.clear()
     cmds.move(1, 2, 3, cube)

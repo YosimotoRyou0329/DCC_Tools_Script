@@ -39,23 +39,21 @@ Maya APIのコールバックで変更を検知し、120ms以内の変更をま�
 
 送信中に来た変更は積み上げず、送信完了後に最新の状態を送ります。
 
-## マテリアル（Mayaで作り、UnityのexeでShaderを確認）
+## マテリアル（Mayaはいつも通り、シェーダーはUnityのexeで設定）
 
-パネルの「マテリアル」欄で、同期リストのオブジェクトが使うマテリアルを編集します。
+Mayaではモデリングとテクスチャ貼りまでをいつも通り行います（このツールはMayaのマテリアルを編集しません）。
 
-- `新規`: 選択中のオブジェクト / フェースに新しいマテリアル（lambert）を作って割り当て。
-- `Unityシェーダー`: exeに含まれるShaderから選択（HDRP/Lit + Unityの一覧のMaterialが使うShader）。
-  未指定なら、Unityに同名のMaterialがあればそれを使い、無ければHDRP/Lit。
-- `ベースカラー` / `ノーマル`: Mayaのfileノードとして接続（ノーマルはbump2d・Tangent Space）。
-  MayaのビューポートでUV展開・テクスチャの貼り具合を確認できます。
-- その他のテクスチャ枠（Shaderごとに自動表示）はマテリアルの `unityTextures` に保存。
-- テクスチャファイルを上書き保存（Substanceの再書き出し等）すると、Maya・Unityとも自動で再読込。
-- Unity側はテクスチャをファイルから直接読みます（PNG / JPG）。Unityのアセットにはまだ書き出しません。
+- 同期すると、Mayaのマテリアル名ごとにexe内でMaterialを自動生成（初回は **HDRP/Lit**）。
+  Mayaの色・ベースカラーテクスチャ・ノーマルマップ（bump2d / Tangent Space）を自動で反映。
+- exeの **Inspector** で、マテリアル（スロット）ごとにシェーダーを選び、全プロパティを編集。
+  複数マテリアルのオブジェクトはスロットごとに設定。変更した値は `*` 付きで表示、`Reset` で初期状態へ。
+- 設定はマテリアル名ごとに `<Mayaプロジェクト>/unityPreview/materials/<名前>.json` へ自動保存。
+  形やUVを直しても、別のシーンでも、同じプロジェクト・同じマテリアル名なら同じシェーダーで表示されます。
+- テクスチャファイルを上書き保存（Substanceの再書き出し等）すると、Maya・Unityとも自動で再読込（PNG / JPG）。
 
-送信内容: `{"type":"MATERIAL_DEF","name":"MT_Body","template":"Shader Graphs/SHG_NTE_Cloth",
-"baseColor":[1,1,1,1],"textures":[{"prop":"@base","path":"C:/.../body.png"},{"prop":"@normal","path":"..."}]}`
-（`@base` / `@normal` はShaderのメイン / ノーマル枠に読み替え）。変化した時だけ、メッシュより先に送ります。
-テンプレート一覧は接続時に `{"type":"GET_TEMPLATES"}` で取得（Unityが1行で応答）。
+送信内容: `{"type":"SESSION","materialFolder":"<project>/unityPreview/materials"}`（接続時・シーンを開いた時）、
+`{"type":"MATERIAL_DEF","name":"MT_Body","baseColor":[1,1,1,1],"textures":[{"prop":"@base","path":"..."},{"prop":"@normal","path":"..."}]}`
+（変化した時だけ、メッシュより先に送信）。
 
 ## Unityの窓（PiP）
 
@@ -78,9 +76,9 @@ Maya APIのコールバックで変更を検知し、120ms以内の変更をま�
 - `ui.py`: ドッキング可能なパネル（表示と操作のみ）。
 - `scene_watch.py`: Mayaのコールバックで変更されたメッシュを集める。
 - `sync_list.py`: 同期リスト（シーン保存・対象判定）。
-- `material.py`: Mayaマテリアル ⇔ MATERIAL_DEF、テクスチャ接続の編集。
+- `material.py`: Mayaマテリアル → MATERIAL_DEF（読み取りのみ）。
 - `mesh.py` / `mesh_payload.py`: メッシュ取得 / 送信データ作成（後者はMaya非依存）。
-- `transport.py`: TCP送信・問い合わせ・接続確認。Maya/Qtに依存しない。
+- `transport.py`: TCP送信と接続確認。Maya/Qtに依存しない。
 - `unity_window.py`: Win32でUnityの窓を操作（サイズ変更・最前面・表示切替）。
 - Mayaメニュー生成はこのリポジトリではなく、bat側の `dcc_maya_menu.py`。
 
@@ -107,5 +105,5 @@ Maya→Unity: localhost:50001 / UTF-8 JSON + 改行 / 1接続1メッセージ。
 ## 検証
 
 - `python -m unittest tests.test_mesh_payload tests.test_transport`（Maya不要）
-- `mayapy tests/maya_smoke.py`: 同期リストの絞り込み・移動の同期・リストから外した時の削除（要Maya）
+- `mayapy tests/maya_smoke.py`: 同期リストの絞り込み・SESSION / MATERIAL_DEF・移動の同期・リストから外した時の削除（要Maya）
 - PiP・窓操作（Win32）とMayaのViewport操作からの往復は実機確認が必要です。

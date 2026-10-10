@@ -70,7 +70,7 @@ def build(config):
         landmarks = config.get("landmarks") or layout.default_landmarks()
         views = {v: e["guides"] for v, e in config.get("views", {}).items()
                  if v in layout.VIEWS and e and e.get("guides")}
-        align = [l["key"] for l in landmarks if l.get("align")]
+        align = layout.aligned_keys(landmarks)
         try:
             fits, targets = layout.fit_all(views, config.get("master", "front"), config["height"], align)
         except ValueError as error:

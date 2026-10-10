@@ -14,7 +14,8 @@ Alignment (landmarks)
   (one uniform scale per image, so the image is never stretched).
 - The master image defines the world: its head guide is at `height`, its feet guide at 0.
 - Other images are fitted to the master on the landmarks marked "align" (eyes, chin...):
-  1 landmark -> height only, 2 or more -> scale and height by least squares.
+  1 landmark -> height only (exact), 2 -> scale and height (exact). The editor allows 2 at most
+  (aligned_keys); fit_image still averages by least squares if given more.
 """
 
 VIEWS = ("front", "back", "right", "left")
@@ -51,6 +52,16 @@ LANDMARK_COLORS = ("#ffd166", "#f78c6b", "#c77dff", "#06d6a0", "#ef476f", "#90be
 def default_landmarks():
     return [{"key": "top", "name": "頭頂", "align": True},
             {"key": "bottom", "name": "足元", "align": True}]
+
+
+MAX_ALIGNED = 2   # two lines fix scale and height exactly; more would only average the error
+
+
+def aligned_keys(landmarks):
+    """Keys used for alignment: the (at most 2) most recently checked landmarks."""
+    aligned = [(l.get("order", i), l["key"]) for i, l in enumerate(landmarks) if l.get("align")]
+    aligned.sort(key=lambda pair: pair[0])
+    return [key for _, key in aligned[-MAX_ALIGNED:]]
 
 
 def default_guides(width, height):

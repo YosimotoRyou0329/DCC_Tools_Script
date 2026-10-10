@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from maya_reference_sheet.layout import plane_placement, detect_guides, fit_all, placement_from_fit, VIEWS
+from maya_reference_sheet.layout import plane_placement, detect_guides, fit_all, placement_from_fit, aligned_keys, VIEWS
 
 
 def close(a, b):
@@ -83,6 +83,17 @@ class FitTests(unittest.TestCase):
         residuals = fits["left"]["residuals"]
         self.assertAlmostEqual(sum(residuals.values()), 0.0)   # balanced error, nothing exact
         self.assertTrue(max(abs(e) for e in residuals.values()) < 2.0)
+
+    def test_at_most_two_lines_and_they_match_exactly(self):
+        landmarks = [{"key": "top", "align": True}, {"key": "bottom", "align": True},
+                     {"key": "eye", "align": True, "order": 5}, {"key": "chin", "align": True, "order": 6}]
+        keys = aligned_keys(landmarks)
+        self.assertEqual(keys, ["eye", "chin"])
+        # side image: whole body proportions differ, head drawn bigger -> eye and chin still exact
+        side = {"top": 30.0, "bottom": 1200.0, "center": 400.0, "eye": 140.0, "chin": 290.0}
+        fits, targets = fit_all({"front": self.master, "left": side}, "front", 160.0, keys)
+        for key in keys:
+            self.assertAlmostEqual(self.world(fits["left"], side[key]), targets[key])
 
     def test_placement_from_fit_matches_plane_placement(self):
         guides = {"top": 100.0, "bottom": 900.0, "center": 400.0}

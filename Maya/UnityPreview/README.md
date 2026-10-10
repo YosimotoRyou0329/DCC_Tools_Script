@@ -28,18 +28,34 @@ EXEパスはユーザーごとのQSettingsに保存され、リポジトリに�
 
 ## 通信と制限
 
-Maya→Unity: localhost:50001 / UTF-8 JSON + 改行 / `MESH_DATA`。
+Maya→Unity: localhost:50001 / UTF-8 JSON + 改行 / `MESH_DATA_V2`。
 Unity→Maya: localhost:50002 / little-endian int32の幅・高さ・バイト数 + RGBA32。
 画像は上下反転のみ。追加ガンマ補正なし。
 Mayaの座標はそのまま送信し、Unity側でZと三角形の向きを反転、倍率は1.0。
 メッシュ監視タイマーは使用しません。ネットワーク処理は別スレッドです。
 送信中の追加同期は積み上げずスキップし、画面に案内します。
-一度送ったオブジェクトの削除、マテリアル、UV、カメラの同期は既存プロトコルの対象外です。
-既存PreviewHostと同じくUnity側が法線を再計算します。
+一度送ったオブジェクトの削除とカメラの同期は対象外です。
 ポート50002を使う旧Script Editor版は停止してから起動してください。
 
 Unity C#・MCP設定は変更していません。既存のビルド済みHostを利用します。
 Unity側コードを変更した場合は別途Hostの再ビルドが必要です。
+
+## MESH_DATA_V2（マテリアル連携）
+
+```json
+{"type":"MESH_DATA_V2","name":"|body|bodyShape",
+ "positions":[x,y,z,...],"normals":[x,y,z,...],"uvs":[u,v,...],
+ "submeshes":[{"material":"MT_Mutou_Toon_Skin","triangles":[0,1,2,...]}]}
+```
+
+- 頂点は (頂点・法線・UV) の組み合わせ単位で分割。ハードエッジとUVの継ぎ目を保持。
+- 法線はMayaの値をそのまま送信（Unity側で再計算しない）。UVはカレントUVセット。
+- マテリアル名 = Mayaマテリアルノード名（ネームスペース除去）。
+  文字列アトリビュート `unityMaterial` があればその値を優先。
+- Unity側は `CS_MayaPreviewMaterialCatalog`（Resources）から同名のMaterialを割り当てる。
+  名前なし → 灰色、Unityに無い名前 → マゼンタ。
+- 変換処理は `mesh_payload.py`（Maya非依存）。`tests/test_mesh_payload.py` で確認。
+- 旧PreviewHost（`MESH_DATA` のみ対応）では表示されないため、Unity側の再ビルドが必要。
 
 ## 検証
 

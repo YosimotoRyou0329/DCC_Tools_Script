@@ -10,7 +10,7 @@ import maya.standalone
 maya.standalone.initialize(name="python")
 from maya import cmds
 from maya_unity_preview.qt import QtWidgets
-from maya_unity_preview.controller import PreviewController
+from maya_unity_preview.engine import PreviewController
 
 app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 sent = []
@@ -22,13 +22,13 @@ def pump(controller):
     app.processEvents()
 
 
-with patch("maya_unity_preview.controller.is_listening", return_value=False), \
-     patch("maya_unity_preview.controller.unity_window.IS_WINDOWS", False):
+with patch("maya_unity_preview.engine.is_listening", return_value=False), \
+     patch("maya_unity_preview.engine.unity_window.IS_WINDOWS", False):
     controller = PreviewController()
 cube = cmds.polyCube(name="smokeCube")[0]
 other = cmds.polySphere(name="smokeSphere")[0]
 
-with patch("maya_unity_preview.controller.send_messages", side_effect=lambda m, c: sent.extend(m)):
+with patch("maya_unity_preview.engine.send_messages", side_effect=lambda m, c: sent.extend(m)):
     controller._on_connection(True)
     pump(controller)
     assert not sent, "empty sync list must send nothing"

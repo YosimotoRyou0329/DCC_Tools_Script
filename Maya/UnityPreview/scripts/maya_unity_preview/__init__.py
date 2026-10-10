@@ -6,7 +6,7 @@ def controller():
     """The sync engine lives as long as Maya; the panel can be closed and reopened."""
     global _controller
     if _controller is None:
-        from .controller import PreviewController
+        from .engine import PreviewController   # module name must not shadow controller()
         _controller = PreviewController()
     return _controller
 

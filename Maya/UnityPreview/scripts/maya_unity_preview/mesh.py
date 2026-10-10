@@ -64,3 +64,15 @@ def selected_meshes():
         else:
             shapes.update(cmds.listRelatives(node, allDescendents=True, fullPath=True, type="mesh") or [])
     return [_extract(shape) for shape in sorted(shapes) if not cmds.getAttr(shape + ".intermediateObject")]
+
+
+def meshes_for(paths):
+    """Payloads for the given mesh shape paths; missing or intermediate shapes are skipped."""
+    result = []
+    for path in paths:
+        if not cmds.objExists(path) or cmds.nodeType(path) != "mesh":
+            continue
+        if cmds.getAttr(path + ".intermediateObject"):
+            continue
+        result.append(_extract(path))
+    return result

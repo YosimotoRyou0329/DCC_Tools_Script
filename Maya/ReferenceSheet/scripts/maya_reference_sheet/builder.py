@@ -3,6 +3,8 @@
 ReferenceSheet_GRP            (the group can be moved; its transform is kept on update)
   RS_front_PLN ... RS_left_PLN  polygon planes, image aspect ratio, backface culled,
                                 not rendered, unlit surfaceShader + file texture
+  RS_guide_<key>_CRV            guide line loops at the landmark heights (optional)
+Images are aligned on the checked landmarks (see layout.fit_all).
 ReferenceSheet_LYR            display layer (Reference = not selectable, optional)
 The editor settings are stored in the scene (fileInfo), so reopening the tool restores them.
 """
@@ -37,7 +39,8 @@ def unit_label():
 def default_config():
     height = default_height()
     return {"height": height, "distance": round(height * 0.5, 4), "opacity": 1.0,
-            "reference": True, "textures": True, "views": {}}
+            "reference": True, "textures": True, "show_guides": True, "master": "front",
+            "landmarks": layout.default_landmarks(), "views": {}}
 
 
 def load_config():
@@ -64,6 +67,15 @@ def build(config):
     try:
         group = GROUP if cmds.objExists(GROUP) else cmds.group(empty=True, name=GROUP)
         _remove_planes()
+        landmarks = config.get("landmarks") or layout.default_landmarks()
+        views = {v: e["guides"] for v, e in config.get("views", {}).items()
+                 if v in layout.VIEWS and e and e.get("guides")}
+        align = [l["key"] for l in landmarks if l.get("align")]
+        try:
+            fits, targets = layout.fit_all(views, config.get("master", "front"), config["height"], align)
+        except ValueError as error:
+            warnings.append(str(error))
+            fits, targets = {}, {}
         for view in layout.VIEWS:
             entry = config.get("views", {}).get(view) or {}
             path = entry.get("path") or ""
@@ -76,13 +88,17 @@ def build(config):
             if not width or not height:
                 warnings.append("{}: 画像サイズが不明です".format(layout.LABELS[view]))
                 continue
-            try:
-                placement = layout.plane_placement(view, width, height, entry["guides"], config["height"],
-                                                   config["distance"], entry.get("flip", False))
-            except (KeyError, ValueError) as error:
-                warnings.append("{}: {}".format(layout.LABELS[view], error))
+            fit = fits.get(view)
+            if not fit:
+                warnings.append("{}: ガイドが正しくありません".format(layout.LABELS[view]))
                 continue
+            placement = layout.placement_from_fit(view, width, height, entry["guides"]["center"], fit["scale"],
+                                                  fit["origin"], config["distance"], entry.get("flip", False))
             created.append(_make_plane(group, view, path, placement, entry.get("flip", False), config["opacity"]))
+        if config.get("show_guides", True):
+            for landmark in landmarks:
+                if landmark["key"] in targets:
+                    _make_guide(group, landmark, targets[landmark["key"]], config["distance"])
         _apply_layer(group, config.get("reference", True))
         if config.get("textures", True):
             _show_textures()
@@ -143,6 +159,23 @@ def _make_plane(group, view, path, placement, flip, opacity):
         cmds.setAttr(node + "." + TAG_ATTR, view, type="string")
     cmds.sets(plane, edit=True, forceElement=engine)
     return plane
+
+
+def _make_guide(group, landmark, height, distance):
+    """Square loop at the landmark height: a horizontal line in every orthographic view."""
+    r = float(distance)
+    points = [(-r, height, -r), (r, height, -r), (r, height, r), (-r, height, r), (-r, height, -r)]
+    curve = cmds.curve(degree=1, point=points, name="RS_guide_{}_CRV".format(landmark["key"]))
+    curve = cmds.parent(curve, group, relative=True)[0]
+    color = (landmark.get("color") or {"top": "#ff6b6b", "bottom": "#62e27a"}.get(landmark["key"], "#ffd166")).lstrip("#")
+    rgb = [int(color[i:i + 2], 16) / 255.0 for i in (0, 2, 4)]
+    cmds.setAttr(curve + ".overrideEnabled", 1)
+    cmds.setAttr(curve + ".overrideRGBColors", 1)
+    cmds.setAttr(curve + ".overrideColorRGB", *rgb)
+    for attr, value in ((TAG_ATTR, "guide"), ("referenceSheetLabel", landmark["name"])):
+        cmds.addAttr(curve, longName=attr, dataType="string")
+        cmds.setAttr(curve + "." + attr, value, type="string")
+    return curve
 
 
 def _set_uvs(plane):

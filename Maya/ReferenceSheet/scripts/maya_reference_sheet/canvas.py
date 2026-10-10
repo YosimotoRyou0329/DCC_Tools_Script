@@ -1,9 +1,7 @@
 """Qt widgets: guide editor for one image, and an aligned overview of every image."""
 from .qt import QtCore, QtGui, QtWidgets
 
-GUIDE_KEYS = ("top", "bottom", "center")
-GUIDE_COLORS = {"top": "#ff6b6b", "bottom": "#62e27a", "center": "#4fd3ff"}
-GUIDE_NAMES = {"top": "頭頂", "bottom": "足元", "center": "中心"}
+BUILTIN_COLORS = {"top": "#ff6b6b", "bottom": "#62e27a", "center": "#4fd3ff"}
 PICK_DISTANCE = 8
 IMAGE_FILTER = ("png", "jpg", "jpeg", "bmp", "tif", "tiff", "tga")
 
@@ -22,8 +20,14 @@ def dropped_image(event):
     return None
 
 
+def landmark_color(landmark):
+    return QtGui.QColor(BUILTIN_COLORS.get(landmark["key"]) or landmark.get("color") or "#ffd166")
+
+
 class GuideCanvas(QtWidgets.QWidget):
-    """Shows one image (never stretched) with draggable head / feet / centre guides."""
+    """One image (never stretched) with draggable horizontal guides (head, feet, landmarks)
+    and the vertical centre guide. Dashed lines show where the master image's landmarks land
+    on this image after alignment: the gap is the remaining mismatch."""
     guides_changed = QtCore.Signal(dict)     # emitted when a drag ends
     file_dropped = QtCore.Signal(str)
 
@@ -35,14 +39,25 @@ class GuideCanvas(QtWidgets.QWidget):
         self.pixmap = None
         self.image_size = (0, 0)
         self.guides = None
+        self.expected = {}
+        self.landmarks = []
         self.drag = None
         self.hover = None
 
-    def set_image(self, pixmap, image_size, guides):
+    def set_landmarks(self, landmarks):
+        self.landmarks = list(landmarks)
+        self.update()
+
+    def set_image(self, pixmap, image_size, guides, expected=None):
         self.pixmap = pixmap
         self.image_size = tuple(image_size or (0, 0))
         self.guides = dict(guides) if guides else None
+        self.expected = dict(expected or {})
         self.drag = self.hover = None
+        self.update()
+
+    def set_expected(self, expected):
+        self.expected = dict(expected or {})
         self.update()
 
     # ------------------------------------------------------------------ geometry
@@ -54,15 +69,19 @@ class GuideCanvas(QtWidgets.QWidget):
         scale = min(area.width() / width, area.height() / height)
         return scale, area.x() + (area.width() - width * scale) / 2, area.y() + (area.height() - height * scale) / 2
 
+    def _horizontal(self):
+        return [l for l in self.landmarks if self.guides and l["key"] in self.guides]
+
     def _hit(self, pos):
         fit = self._fit()
         if not fit or not self.guides:
             return None
         scale, ox, oy = fit
         best, best_distance = None, PICK_DISTANCE
-        for key in GUIDE_KEYS:
+        candidates = [(l["key"], False) for l in self._horizontal()] + [("center", True)]
+        for key, vertical in candidates:
             value = self.guides[key] * scale
-            distance = abs(pos.x() - (ox + value)) if key == "center" else abs(pos.y() - (oy + value))
+            distance = abs(pos.x() - (ox + value)) if vertical else abs(pos.y() - (oy + value))
             if distance <= best_distance:
                 best, best_distance = key, distance
         return best
@@ -83,19 +102,25 @@ class GuideCanvas(QtWidgets.QWidget):
                            QtCore.QRectF(self.pixmap.rect()))
         if not self.guides:
             return
-        for key in GUIDE_KEYS:
+        right = ox + width * scale
+        for landmark in self._horizontal():
+            key = landmark["key"]
+            color = landmark_color(landmark)
+            if key in self.expected:            # master's landmark on this image (after alignment)
+                pen = QtGui.QPen(color, 1.2, QtCore.Qt.DashLine)
+                painter.setPen(pen)
+                y = oy + self.expected[key] * scale
+                painter.drawLine(QtCore.QPointF(ox, y), QtCore.QPointF(right, y))
             active = key in (self.drag, self.hover)
-            pen = QtGui.QPen(QtGui.QColor(GUIDE_COLORS[key]), 3 if active else 1.5)
-            painter.setPen(pen)
-            value = self.guides[key] * scale
-            if key == "center":
-                x = ox + value
-                painter.drawLine(QtCore.QPointF(x, oy), QtCore.QPointF(x, oy + height * scale))
-                painter.drawText(QtCore.QPointF(x + 4, oy + 14), GUIDE_NAMES[key])
-            else:
-                y = oy + value
-                painter.drawLine(QtCore.QPointF(ox, y), QtCore.QPointF(ox + width * scale, y))
-                painter.drawText(QtCore.QPointF(ox + 4, y - 4), GUIDE_NAMES[key])
+            painter.setPen(QtGui.QPen(color, 3 if active else 1.5))
+            y = oy + self.guides[key] * scale
+            painter.drawLine(QtCore.QPointF(ox, y), QtCore.QPointF(right, y))
+            painter.drawText(QtCore.QPointF(ox + 4, y - 4), landmark["name"])
+        active = "center" in (self.drag, self.hover)
+        painter.setPen(QtGui.QPen(QtGui.QColor(BUILTIN_COLORS["center"]), 3 if active else 1.5))
+        x = ox + self.guides["center"] * scale
+        painter.drawLine(QtCore.QPointF(x, oy), QtCore.QPointF(x, oy + height * scale))
+        painter.drawText(QtCore.QPointF(x + 4, oy + 14), "中心")
 
     # ------------------------------------------------------------------ mouse
     def mousePressEvent(self, event):
@@ -114,7 +139,7 @@ class GuideCanvas(QtWidgets.QWidget):
                 value = min(max((pos.y() - oy) / scale, 0.0), float(height))
                 if self.drag == "top":
                     value = min(value, self.guides["bottom"] - 1)
-                else:
+                elif self.drag == "bottom":
                     value = max(value, self.guides["top"] + 1)
             self.guides[self.drag] = round(value, 1)
             self.update()
@@ -149,16 +174,21 @@ class GuideCanvas(QtWidgets.QWidget):
 
 
 class OverviewCanvas(QtWidgets.QWidget):
-    """Every image scaled by its guides: heads and feet line up when the guides are right."""
+    """Every image placed exactly as it will be in Maya (same world scale, aligned on the
+    checked landmarks), with the landmark heights drawn across all of them."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumSize(220, 280)
-        self.items = []          # (label, pixmap, (w, h), guides, flip)
+        self.items = []          # (label, pixmap, (w, h), guides, flip, fit)
+        self.lines = []          # (name, world height, QColor)
+        self.height_value = 1.0
         self._mirrored = {}
 
-    def set_items(self, items):
+    def set_items(self, items, lines, height):
         self.items = items
+        self.lines = lines
+        self.height_value = max(1e-6, float(height))
         self._mirrored = {}
         self.update()
 
@@ -173,13 +203,13 @@ class OverviewCanvas(QtWidgets.QWidget):
         column = self.width() / float(len(self.items))
         head_y = 28.0
         feet_y = self.height() - 16.0
-        span = feet_y - head_y
-        for index, (label, pixmap, size, guides, flip) in enumerate(self.items):
+        units = (feet_y - head_y) / self.height_value          # screen pixels per world unit
+        for index, (label, pixmap, size, guides, flip, fit) in enumerate(self.items):
             width, height = size
-            scale = span / max(1.0, guides["bottom"] - guides["top"])
+            k = fit["scale"] * units                            # screen pixels per image pixel
             center = width - guides["center"] if flip else guides["center"]
             cx = column * index + column / 2
-            target = QtCore.QRectF(cx - center * scale, feet_y - guides["bottom"] * scale, width * scale, height * scale)
+            target = QtCore.QRectF(cx - center * k, feet_y - fit["origin"] * units, width * k, height * k)
             if flip:
                 if index not in self._mirrored:
                     self._mirrored[index] = pixmap.transformed(QtGui.QTransform().scale(-1, 1))
@@ -187,11 +217,13 @@ class OverviewCanvas(QtWidgets.QWidget):
             painter.save()
             painter.setClipRect(QtCore.QRectF(column * index, 0, column, self.height()))
             painter.drawPixmap(target, pixmap, QtCore.QRectF(pixmap.rect()))
-            painter.setPen(QtGui.QPen(QtGui.QColor(GUIDE_COLORS["center"]), 1, QtCore.Qt.DashLine))
-            painter.drawLine(QtCore.QPointF(cx, head_y), QtCore.QPointF(cx, feet_y))
+            painter.setPen(QtGui.QPen(QtGui.QColor(BUILTIN_COLORS["center"]), 1, QtCore.Qt.DashLine))
+            painter.drawLine(QtCore.QPointF(cx, 0), QtCore.QPointF(cx, self.height()))
             painter.restore()
             painter.setPen(QtGui.QColor("#dddddd"))
             painter.drawText(QtCore.QRectF(column * index, 4, column, 20), QtCore.Qt.AlignCenter, label)
-        for key, y in (("top", head_y), ("bottom", feet_y)):
-            painter.setPen(QtGui.QPen(QtGui.QColor(GUIDE_COLORS[key]), 1.5))
+        for name, world, color in self.lines:
+            y = feet_y - world * units
+            painter.setPen(QtGui.QPen(color, 1.5))
             painter.drawLine(QtCore.QPointF(0, y), QtCore.QPointF(self.width(), y))
+            painter.drawText(QtCore.QPointF(4, y - 3), name)

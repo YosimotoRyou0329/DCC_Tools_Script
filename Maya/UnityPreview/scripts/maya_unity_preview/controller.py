@@ -3,8 +3,11 @@
 - watches for the Unity PreviewHost (started here or by hand) and starts syncing when it appears
 - SceneWatch reports changed meshes; only meshes in the SyncList are sent
 - controls the Unity window (resizable, PiP, hide / show)
-- materials: MATERIAL_DEF is sent with the meshes that use a material (only when it changed);
-  texture files are watched on disk, so re-exporting from Substance updates Maya and Unity
+- materials: MATERIAL_DEF (Maya colour / base map / normal map) is sent with the meshes that
+  use a material, only when it changed; texture files are watched on disk, so re-exporting
+  from Substance updates Maya and Unity. Shaders and their values are set in the PreviewHost.
+- SESSION tells Unity where to save its material settings: <Maya project>/unityPreview/materials
+  (one JSON per material name, so the same material looks the same in every scene of the project)
 """
 import json
 import os
@@ -19,7 +22,7 @@ from .qt import QtCore, QtWidgets, wrapInstance
 from .mesh import meshes_for
 from .scene_watch import SceneWatch
 from .sync_list import SyncList
-from .transport import is_listening, send_messages, remove_message, request
+from .transport import is_listening, send_messages, remove_message
 from . import material as mat
 from . import unity_window
 
@@ -31,8 +34,6 @@ class PreviewController(QtCore.QObject):
     connection_changed = QtCore.Signal(bool)
     list_changed = QtCore.Signal()
     unity_visibility_changed = QtCore.Signal(bool)
-    templates_changed = QtCore.Signal()
-    _templates_received = QtCore.Signal(list)
     _connection_detected = QtCore.Signal(bool)
     _send_finished = QtCore.Signal(str)
 
@@ -48,7 +49,7 @@ class PreviewController(QtCore.QObject):
         self.unity = None
         self.normal_rect = None
         self.sync_list = SyncList()
-        self.templates = []          # [{"name", "baseProp", "normalProp", "textures": [{"prop", "label"}]}]
+        self._session_pending = False
         self._sent_defs = {}         # Unity material name -> JSON last sent
         self._def_nodes = {}         # Unity material name -> Maya material node
         self._texture_users = {}     # normalised texture path -> {Unity material names}
@@ -59,7 +60,6 @@ class PreviewController(QtCore.QObject):
         self._texture_timer.setSingleShot(True)
         self._texture_timer.setInterval(400)    # exporters write in several chunks
         self._texture_timer.timeout.connect(self._reload_textures)
-        self._templates_received.connect(self._on_templates, QtCore.Qt.QueuedConnection)
         self.watch = SceneWatch(self._flush, self.sync_list.contains, self._scene_opened, self)
         self._connection_detected.connect(self._on_connection, QtCore.Qt.QueuedConnection)
         self._send_finished.connect(self._on_sent, QtCore.Qt.QueuedConnection)
@@ -114,7 +114,6 @@ class PreviewController(QtCore.QObject):
         self.connected = connected
         if connected:
             self._attach_window()
-            threading.Thread(target=self._fetch_templates, daemon=True).start()
             if self.auto_sync:
                 self._start_sync()
             else:
@@ -127,20 +126,9 @@ class PreviewController(QtCore.QObject):
         self.connection_changed.emit(connected)
 
     # ------------------------------------------------------------------ sync
-    def _fetch_templates(self):
-        try:
-            reply = request({"type": "GET_TEMPLATES"})
-            templates = reply.get("templates", []) if isinstance(reply, dict) else []
-        except (OSError, ValueError):
-            templates = []
-        self._templates_received.emit(templates)
-
-    def _on_templates(self, templates):
-        self.templates = templates
-        self.templates_changed.emit()
-
     def _start_sync(self):
         self._sent_defs.clear()      # Unity (re)started: it knows no Maya material yet
+        self._session_pending = True
         if self.watch.active:
             self.watch.resend_all()
         else:
@@ -172,7 +160,13 @@ class PreviewController(QtCore.QObject):
         selection = om_selection(path)
         return selection is not None and self.sync_list.contains(selection)
 
+    @staticmethod
+    def material_folder():
+        root = cmds.workspace(query=True, rootDirectory=True) or ""
+        return os.path.join(root, "unityPreview", "materials").replace("\\", "/")
+
     def _scene_opened(self):
+        self._session_pending = True      # the project may have changed
         self.sync_list.load()
         self.list_changed.emit()
 
@@ -186,6 +180,9 @@ class PreviewController(QtCore.QObject):
             meshes = meshes_for(paths)
             definitions = self._material_messages(meshes)
             messages = [remove_message(name) for name in removed] + definitions + meshes
+            if self._session_pending:
+                messages.insert(0, {"type": "SESSION", "materialFolder": self.material_folder()})
+                self._session_pending = False
         except Exception as error:  # a broken mesh must not stop the sync
             self._set_status("メッシュ取得エラー: " + str(error))
             return True
@@ -242,35 +239,6 @@ class PreviewController(QtCore.QObject):
                     self.watch.mark_dependents(node)
         if changed:
             self._set_status("テクスチャ更新: " + ", ".join(os.path.basename(p) for p in changed))
-
-    # ------------------------------------------------------------------ material editing (panel)
-    def materials_in_list(self):
-        paths = [p for p in cmds.ls(type="mesh", long=True, noIntermediate=True) or []
-                 if self._is_target_path(p)]
-        return mat.materials_of_meshes(paths)
-
-    def create_material(self, name, template):
-        targets = cmds.ls(selection=True, long=True) or []
-        material = mat.create_material(name, template, targets)
-        self._set_status("マテリアル作成: " + material + ("" if targets else "（割り当てなし）"))
-        return material
-
-    def set_template(self, material, template):
-        mat.set_template(material, template)
-
-    def set_texture(self, material, slot, path):
-        if slot == "@base":
-            mat.set_base_texture(material, path)
-        elif slot == "@normal":
-            mat.set_normal_texture(material, path)
-        else:
-            mat.set_extra_texture(material, slot, path)
-
-    def template(self, name):
-        for template in self.templates:
-            if template.get("name") == name:
-                return template
-        return None
 
     def _on_sent(self, message):
         self.sending = False

@@ -1,0 +1,7 @@
+{
+  "id": "toon-shader-node",
+  "name": "Toon Shader Node（mll）",
+  "maya_versions": ["2024"],
+  "plug_ins": ["toonshader_node_mll/out/build/x64-debug/toonshader_node_mll"],
+  "load_plugins": ["ToonShader_Node_Mll.mll"]
+}

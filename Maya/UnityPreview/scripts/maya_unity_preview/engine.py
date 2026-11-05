@@ -88,8 +88,8 @@ class PreviewController(QtCore.QObject):
     def _detect_exe_path(self):
         """Fill in the PreviewHost beside the launcher (<launcher>/../../maya_unity).
 
-        Uses the exe when it is unpacked, else that folder's Open.bat. A valid exe chosen by
-        the user is kept.
+        Uses the exe when it is unpacked, else that folder's Open.bat. The saved path is only
+        used when there is no maya_unity folder.
         """
         exe, bat = host_locator.resolve(self.exe_path)
         target = exe or bat
@@ -194,16 +194,6 @@ class PreviewController(QtCore.QObject):
             self.watch.stop()
             self._set_status("自動同期オフ" + ("（Unity接続中）" if self.connected else ""))
 
-    def resend_list(self):
-        if not self.connected:
-            self._set_status("Unityが起動していません。")
-        elif self.watch.active:
-            self.watch.resend_all()
-        else:
-            paths = [p for p in cmds.ls(type="mesh", long=True, noIntermediate=True) or []
-                     if self._is_target_path(p)]
-            self._flush(paths, [])
-
     def _is_target_path(self, path):
         selection = om_selection(path)
         return selection is not None and self.sync_list.contains(selection)
@@ -293,10 +283,16 @@ class PreviewController(QtCore.QObject):
         self._set_status(message)
 
     # ------------------------------------------------------------------ sync list
+    def _send_list_change(self):
+        """同期リストが変わったら自動でUnityへ反映する（追加分を送信、外した分をUnityから削除）。"""
+        self.list_changed.emit()
+        # 自動同期中（Unity接続中）はwatchが動いているので、全メッシュを再判定して
+        # 新しくリストに入った物を送信し、外れた物をUnityから削除する。
+        self.watch.refresh()
+
     def add_to_list(self, nodes):
         added = self.sync_list.add(nodes)
-        self.list_changed.emit()
-        self.watch.refresh()
+        self._send_list_change()
         if added:
             self._set_status("同期リストに{}件追加しました。".format(added))
         else:
@@ -307,13 +303,11 @@ class PreviewController(QtCore.QObject):
 
     def remove_from_list(self, uuids):
         self.sync_list.remove(uuids)
-        self.list_changed.emit()
-        self.watch.refresh()      # meshes no longer listed are removed from Unity
+        self._send_list_change()      # meshes no longer listed are removed from Unity
 
     def clear_list(self):
         self.sync_list.clear()
-        self.list_changed.emit()
-        self.watch.refresh()
+        self._send_list_change()
 
     # ------------------------------------------------------------------ Unity window (PiP)
     def _attach_window(self):

@@ -8,13 +8,29 @@ Unityの既存PreviewHostに接続します。Maya 2027本体での実機確認�
 1. DCC Launcherで「ツールフォルダー追加」から、このリポジトリの `Maya` を選択。
 2. `Unity HDRP Preview` にチェックし、起動JSONを保存してMayaを起動。
 3. Maya上部の `DCC Launcher → Unity HDRP Preview` をクリック（ドッキング可能なパネル）。
-4. 初回は `設定` でPreviewHost.exeを指定し、`Unityを起動`。
+4. `Unityを起動`。PreviewHostは自動で指定されます（下記）。別のexeを使う場合だけ `設定` で指定。
 5. アウトライナーから同期したいオブジェクトを「同期リスト」へドロップ（または `選択を追加`）。
 
 Unityが起動して接続できると、同期リストのメッシュを送り、以後は変更を自動で同期します。
 Unityを手動で起動した場合も1秒以内に検知します。送信ボタンは不要です。
 パネルは他のパネルにドッキング・タブ化・閉じることができ、閉じても同期は続きます
 （同期エンジン `engine.py` はMaya終了まで常駐）。
+
+## PreviewHostの自動指定
+
+ランチャーのbatフォルダー（`dcc_maya_menu.py` のある場所）から2階層上の `maya_unity` を探します。
+
+```
+out/
+  launcher/DCCLauncher/   ランチャー（bat）
+  maya_unity/             MS2027.exe（解凍後） / Open.bat + data.mpk.NNN（未解凍）
+```
+
+- exe（`<名前>_Data` フォルダーがあるexe）があればそれを指定。
+- まだ解凍していなければ `Open.bat` を指定。`Unityを起動` を押すと裏で `Open.bat` を実行し、
+  解凍でき次第exeに切り替えてそのまま起動します（解凍中はステータスに表示）。
+- 指定したexeが消えた場合（Clause.batで再圧縮した等）は、同じフォルダーの `Open.bat` に戻ります。
+- ユーザーが指定した有効なexeはそのまま使います。環境変数 `DCC_LAUNCHER_ROOT` でランチャーの場所を上書きできます。
 
 ## 同期リスト
 
@@ -72,6 +88,7 @@ Mayaではモデリングとテクスチャ貼りまでをいつも通り行い�
 
 - `tool.json`: ツール名・対応Maya・Pythonパス・起動関数。
 - `scripts/maya_unity_preview/__init__.py`: `show()`（パネル） / `controller()`（常駐エンジン）。
+- `host_locator.py`: ランチャー横の `maya_unity` からexe / Open.batを探す・Open.batで解凍。Maya/Qtに依存しない。
 - `engine.py`: Unity起動・接続監視、同期、同期リスト操作、Unityの窓操作。
 - `ui.py`: ドッキング可能なパネル（表示と操作のみ）。
 - `scene_watch.py`: Mayaのコールバックで変更されたメッシュを集める。
@@ -104,6 +121,6 @@ Maya→Unity: localhost:50001 / UTF-8 JSON + 改行 / 1接続1メッセージ。
 
 ## 検証
 
-- `python -m unittest tests.test_mesh_payload tests.test_transport`（Maya不要）
+- `python -m unittest tests.test_mesh_payload tests.test_transport tests.test_host_locator`（Maya不要）
 - `mayapy tests/maya_smoke.py`: 同期リストの絞り込み・SESSION / MATERIAL_DEF・移動の同期・リストから外した時の削除（要Maya）
 - PiP・窓操作（Win32）とMayaのViewport操作からの往復は実機確認が必要です。

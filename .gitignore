@@ -1,3 +1,18 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+# ToonShader_Node_Mll: Maya devkit, zips and build intermediates stay local.
+# Only the source, tool.json, the built .mll and its shaders are tracked.
+/Maya/ToonShader_Node_Mll/Autodesk_Maya_*/
+/Maya/ToonShader_Node_Mll/*.zip
+/Maya/ToonShader_Node_Mll/toonshader_node_mll/.vs/
+/Maya/ToonShader_Node_Mll/toonshader_node_mll/out/*
+!/Maya/ToonShader_Node_Mll/toonshader_node_mll/out/build/
+/Maya/ToonShader_Node_Mll/toonshader_node_mll/out/build/*
+!/Maya/ToonShader_Node_Mll/toonshader_node_mll/out/build/x64-debug/
+/Maya/ToonShader_Node_Mll/toonshader_node_mll/out/build/x64-debug/*
+!/Maya/ToonShader_Node_Mll/toonshader_node_mll/out/build/x64-debug/toonshader_node_mll/
+/Maya/ToonShader_Node_Mll/toonshader_node_mll/out/build/x64-debug/toonshader_node_mll/*
+!/Maya/ToonShader_Node_Mll/toonshader_node_mll/out/build/x64-debug/toonshader_node_mll/ToonShader_Node_Mll.mll
+!/Maya/ToonShader_Node_Mll/toonshader_node_mll/out/build/x64-debug/toonshader_node_mll/shaders/

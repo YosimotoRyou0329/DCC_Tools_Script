@@ -1,0 +1,136 @@
+// toonShader.ogsfx : Toon shader for OpenGL Core Profile (GLSL)
+// Same logic as toonShader.fx (DirectX11). See toonShader.fx for detailed comments.
+// NOTE: comments are ASCII only, because some GLSL compilers reject non-ASCII characters.
+
+// ---- Matrices filled automatically by Maya (semantics) ----
+uniform mat4 gWorld    : World;
+uniform mat4 gWorldIT  : WorldInverseTranspose;
+uniform mat4 gViewProj : ViewProjection;
+uniform mat4 gViewInv  : ViewInverse;
+
+// ---- Parameters set from node attributes in C++ (updateDevice) ----
+uniform vec3  gBaseColor        = { 1.0, 1.0, 1.0 };
+uniform bool  gUseTexture       = false;
+uniform float gOutlineWidth     = 0.02;
+uniform vec3  gOutlineColor     = { 0.0, 0.0, 0.0 };
+uniform float gShadowThreshold  = 0.5;
+uniform float gShadowSmoothness = 0.0;
+uniform vec3  gShadowColor      = { 0.6, 0.6, 0.7 };
+
+uniform texture2D gColorTexture <
+	string ResourceType = "2D";
+>;
+uniform sampler2D gColorSampler = sampler_state
+{
+	Texture = <gColorTexture>;
+	TEXTURE_MIN_FILTER = LINEAR_MIPMAP_LINEAR;
+	TEXTURE_MAG_FILTER = LINEAR;
+	TEXTURE_WRAP_S = REPEAT;
+	TEXTURE_WRAP_T = REPEAT;
+};
+
+// ---- Vertex input ----
+attribute appdata
+{
+	vec3 inPosition : POSITION;
+	vec3 inNormal   : NORMAL;
+	vec2 inUV       : TEXCOORD0;
+};
+
+// ---- Vertex shader -> pixel shader ----
+attribute vsOutput
+{
+	vec3 vWorldPos    : TEXCOORD1;
+	vec3 vWorldNormal : TEXCOORD2;
+	vec2 vUV          : TEXCOORD0;
+};
+
+// ---- Pixel shader output ----
+attribute pixelOut
+{
+	vec4 colorOut : COLOR0;
+};
+
+// ============================================================================
+// pass 0 : Outline (extrude along normal, draw back faces only)
+// ============================================================================
+GLSLShader VS_Outline
+{
+	void main()
+	{
+		vec3 worldPos    = (gWorld * vec4(inPosition, 1.0)).xyz;
+		vec3 worldNormal = normalize((gWorldIT * vec4(inNormal, 0.0)).xyz);
+
+		worldPos += worldNormal * gOutlineWidth;   // extrude along normal
+
+		vWorldPos    = worldPos;
+		vWorldNormal = worldNormal;
+		vUV          = inUV;
+		gl_Position  = gViewProj * vec4(worldPos, 1.0);
+	}
+}
+
+GLSLShader PS_Outline
+{
+	void main()
+	{
+		colorOut = vec4(gOutlineColor, 1.0);
+	}
+}
+
+// ============================================================================
+// pass 1 : Toon shading (camera is the light)
+// ============================================================================
+GLSLShader VS_Toon
+{
+	void main()
+	{
+		vec3 worldPos = (gWorld * vec4(inPosition, 1.0)).xyz;
+
+		vWorldPos    = worldPos;
+		vWorldNormal = (gWorldIT * vec4(inNormal, 0.0)).xyz;
+		vUV          = inUV;
+		gl_Position  = gViewProj * vec4(worldPos, 1.0);
+	}
+}
+
+GLSLShader PS_Toon
+{
+	void main()
+	{
+		vec3 N      = normalize(vWorldNormal);
+		vec3 camPos = gViewInv[3].xyz;
+		vec3 L      = normalize(camPos - vWorldPos);
+
+		float NdotL = dot(N, L);
+
+		float halfWidth = max(gShadowSmoothness * 0.5, 0.0001);
+		float lit = smoothstep(gShadowThreshold - halfWidth, gShadowThreshold + halfWidth, NdotL);
+
+		vec3 albedo = gBaseColor;
+		if (gUseTexture)
+		{
+			albedo *= texture(gColorSampler, vUV).rgb;
+		}
+
+		vec3 color = albedo * mix(gShadowColor, vec3(1.0), lit);
+		colorOut = vec4(color, 1.0);
+	}
+}
+
+// ============================================================================
+// technique
+// ============================================================================
+technique Main
+{
+	pass Outline
+	{
+		VertexShader (in appdata, out vsOutput) = VS_Outline;
+		PixelShader  (in vsOutput, out pixelOut) = PS_Outline;
+	}
+	pass Toon
+	{
+		VertexShader (in appdata, out vsOutput) = VS_Toon;
+		PixelShader  (in vsOutput, out pixelOut) = PS_Toon;
+	}
+}

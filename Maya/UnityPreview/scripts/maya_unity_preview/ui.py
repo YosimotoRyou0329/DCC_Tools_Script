@@ -57,9 +57,6 @@ class PreviewPanel(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.pip.setChecked(controller.pip)
         self.pip.toggled.connect(controller.set_pip)
         row.addWidget(self.pip)
-        self.visibility = QtWidgets.QPushButton("Unityを隠す")
-        self.visibility.clicked.connect(controller.toggle_unity_window)
-        row.addWidget(self.visibility)
         row.addStretch(1)
         self.settings_button = QtWidgets.QToolButton()
         self.settings_button.setText("設定")
@@ -89,7 +86,7 @@ class PreviewPanel(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.settings_button.toggled.connect(self.settings_box.setVisible)
         layout.addWidget(self.settings_box)
 
-        # sync list
+        # sync list（追加・削除すると自動でUnityへ反映するので再送信ボタンは置かない）
         layout.addWidget(QtWidgets.QLabel("同期リスト（アウトライナーからドロップ）"))
         self.list = DropList()
         self.list.nodes_dropped.connect(controller.add_to_list)
@@ -98,8 +95,7 @@ class PreviewPanel(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         row = QtWidgets.QHBoxLayout()
         for label, action in (("選択を追加", controller.add_selection),
                               ("削除", self.remove_selected),
-                              ("クリア", controller.clear_list),
-                              ("リストを再送信", controller.resend_list)):
+                              ("クリア", controller.clear_list)):
             button = QtWidgets.QPushButton(label)
             button.clicked.connect(action)
             row.addWidget(button)
@@ -117,7 +113,6 @@ class PreviewPanel(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         controller.status_changed.connect(self.status.setText)
         controller.exe_path_changed.connect(self.exe.setText)
         controller.list_changed.connect(self.refresh_list)
-        controller.unity_visibility_changed.connect(self.update_visibility_button)
         self.refresh_list()
         self.resize(360, 420)
 
@@ -148,6 +143,3 @@ class PreviewPanel(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         names = cmds.ls(item.data(QtCore.Qt.UserRole), long=True) or []
         if names:
             cmds.select(names, replace=True)
-
-    def update_visibility_button(self, visible):
-        self.visibility.setText("Unityを隠す" if visible else "Unityを表示")

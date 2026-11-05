@@ -53,7 +53,17 @@ class HostLocatorTests(unittest.TestCase):
         (self.host / "Open.bat").write_text("@echo off\n")
         self.assertEqual(host_locator.resolve(str(self.host / "MS2027.exe")), (None, self.host / "Open.bat"))
 
-    def test_user_exe_elsewhere_is_kept(self):
+    def test_maya_unity_wins_over_old_saved_exe(self):
+        other = self.out / "custom" / "Host.exe"
+        other.parent.mkdir()
+        other.write_bytes(b"MZ")
+        (self.host / "Open.bat").write_text("@echo off\n")
+        self.assertEqual(host_locator.resolve('"%s"' % other), (None, self.host / "Open.bat"))
+        exe = self.unpack()
+        self.assertEqual(host_locator.resolve('"%s"' % other), (exe, None))
+
+    def test_saved_exe_used_without_maya_unity(self):
+        self.host.rmdir()
         other = self.out / "custom" / "Host.exe"
         other.parent.mkdir()
         other.write_bytes(b"MZ")

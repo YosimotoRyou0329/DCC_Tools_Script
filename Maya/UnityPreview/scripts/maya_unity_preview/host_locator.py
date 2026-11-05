@@ -68,11 +68,20 @@ def find_open_bat(folder):
 
 
 def resolve(path):
-    """Turn a configured path (exe, Open.bat or empty) into what to run.
+    """Decide what to run: the maya_unity folder beside the launcher first, else the configured path.
 
     Returns (exe, open_bat): exe when it can be started now; otherwise the Open.bat that will
     produce it (exe is None). Both None when nothing was found.
     """
+    # ランチャーの2つ上にあるmaya_unityを最優先にする（前に保存した別の場所のexeより優先）。
+    folder = host_directory()
+    if folder is not None:
+        exe = find_exe(folder)
+        if exe:
+            return exe, None
+        bat = find_open_bat(folder)
+        if bat:
+            return None, bat
     path = Path(str(path).strip().strip('"')) if path and str(path).strip() else None
     if path is not None:
         if path.suffix.lower() == ".exe" and path.is_file():
@@ -84,13 +93,7 @@ def resolve(path):
         bat = find_open_bat(folder)
         if bat:
             return None, bat
-    folder = host_directory()
-    if folder is None:
-        return None, None
-    exe = find_exe(folder)
-    if exe:
-        return exe, None
-    return None, find_open_bat(folder)
+    return None, None
 
 
 def _decode(data):

@@ -54,4 +54,32 @@ with patch("maya_unity_preview.engine.send_messages", side_effect=lambda m, c: s
 controller._on_connection(False)
 assert not controller.watch.active
 controller.shutdown()
-print("PASS: sync list filter, material defs, transform sync, list removal, connection lifecycle")
+# PreviewHost not unpacked yet: "Unityを起動" runs <launcher>/../../maya_unity/Open.bat, then the exe
+import tempfile, time
+from maya_unity_preview.qt import QtCore
+out = Path(tempfile.mkdtemp())
+launcher = out / "launcher" / "DCCLauncher"
+launcher.mkdir(parents=True)
+host = out / "maya_unity"
+host.mkdir()
+(host / "Open.bat").write_bytes(b'@echo off\r\nmkdir "%~dp0MS2027_Data"\r\ncopy nul "%~dp0MS2027.exe" >nul\r\n')
+ini = QtCore.QSettings(str(out / "settings.ini"), QtCore.QSettings.IniFormat)
+started = []
+with patch.dict(os.environ, {"DCC_LAUNCHER_ROOT": str(launcher)}), \
+     patch("maya_unity_preview.engine.QtCore.QSettings", return_value=ini), \
+     patch("maya_unity_preview.engine.is_listening", return_value=False), \
+     patch("maya_unity_preview.engine.unity_window.IS_WINDOWS", False):
+    host_ctrl = PreviewController()
+    assert host_ctrl.exe_path == str(host / "Open.bat"), host_ctrl.exe_path
+    host_ctrl._start_exe = started.append
+    host_ctrl.launch_unity()
+    deadline = time.time() + 30
+    while not started and time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.05)
+    assert started == [host / "MS2027.exe"], (started, host_ctrl.status)
+    assert host_ctrl.exe_path == str(host / "MS2027.exe")
+    host_ctrl.shutdown()
+
+print("PASS: sync list filter, material defs, transform sync, list removal, connection lifecycle, "
+      "Open.bat unpack then exe launch")

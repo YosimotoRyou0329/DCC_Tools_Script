@@ -25,6 +25,7 @@ from .sync_list import SyncList
 from .transport import is_listening, send_messages, remove_message
 from . import material as mat
 from . import unity_window
+from . import host_locator
 
 MONITOR_INTERVAL = 1.0
 
@@ -36,11 +37,14 @@ class PreviewController(QtCore.QObject):
     unity_visibility_changed = QtCore.Signal(bool)
     _connection_detected = QtCore.Signal(bool)
     _send_finished = QtCore.Signal(str)
+    _unpack_finished = QtCore.Signal(bool, str, str)
+    exe_path_changed = QtCore.Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.settings = QtCore.QSettings("DCCLauncher", "MayaUnityPreview")
         self.process = None
+        self.unpacking = False
         self.connected = False
         self.sending = False
         self.status = ""
@@ -63,6 +67,8 @@ class PreviewController(QtCore.QObject):
         self.watch = SceneWatch(self._flush, self.sync_list.contains, self._scene_opened, self)
         self._connection_detected.connect(self._on_connection, QtCore.Qt.QueuedConnection)
         self._send_finished.connect(self._on_sent, QtCore.Qt.QueuedConnection)
+        self._unpack_finished.connect(self._on_unpacked, QtCore.Qt.QueuedConnection)
+        self._detect_exe_path()
         QtWidgets.QApplication.instance().aboutToQuit.connect(self.shutdown)
         self._monitor_stop = threading.Event()
         threading.Thread(target=self._monitor, daemon=True).start()
@@ -75,7 +81,20 @@ class PreviewController(QtCore.QObject):
 
     @exe_path.setter
     def exe_path(self, value):
-        self.settings.setValue("exe", value)
+        if value != self.exe_path:
+            self.settings.setValue("exe", value)
+            self.exe_path_changed.emit(value)
+
+    def _detect_exe_path(self):
+        """Fill in the PreviewHost beside the launcher (<launcher>/../../maya_unity).
+
+        Uses the exe when it is unpacked, else that folder's Open.bat. A valid exe chosen by
+        the user is kept.
+        """
+        exe, bat = host_locator.resolve(self.exe_path)
+        target = exe or bat
+        if target is not None:
+            self.exe_path = str(target)
 
     @property
     def auto_sync(self):
@@ -87,13 +106,42 @@ class PreviewController(QtCore.QObject):
 
     # ------------------------------------------------------------------ Unity process
     def launch_unity(self):
-        path = Path(self.exe_path.strip().strip('"'))
-        if not path.is_file() or path.suffix.lower() != ".exe":
-            self._set_status("PreviewHostの.exeファイルを指定してください。")
+        if self.unpacking:
+            self._set_status("Open.batで解凍中です。終わり次第Unityを起動します。")
             return
         if self.connected or (self.process is not None and self.process.poll() is None):
             self._set_status("Unityは起動済みです。")
             return
+        exe, bat = host_locator.resolve(self.exe_path)
+        if exe is not None:
+            self.exe_path = str(exe)
+            self._start_exe(exe)
+        elif bat is not None:
+            # Not unpacked yet: run Open.bat, then start the exe it restores.
+            self.exe_path = str(bat)
+            self.unpacking = True
+            self._set_status("PreviewHostを解凍中（Open.bat）… 終わり次第Unityを起動します。")
+            threading.Thread(target=self._unpack, args=(str(bat),), daemon=True).start()
+        else:
+            self._set_status("PreviewHostの.exe（またはmaya_unityのOpen.bat）を指定してください。")
+
+    def _unpack(self, bat):
+        ok, message = host_locator.run_open_bat(bat)
+        self._unpack_finished.emit(ok, message, bat)
+
+    def _on_unpacked(self, ok, message, bat):
+        self.unpacking = False
+        if not ok:
+            self._set_status("Open.batの解凍に失敗しました: " + message)
+            return
+        exe = host_locator.find_exe(Path(bat).parent)
+        if exe is None:
+            self._set_status("解凍しましたが.exeが見つかりません: " + str(Path(bat).parent))
+            return
+        self.exe_path = str(exe)
+        self._start_exe(exe)
+
+    def _start_exe(self, path):
         try:
             self.process = subprocess.Popen([str(path)], cwd=str(path.parent))
         except OSError as error:

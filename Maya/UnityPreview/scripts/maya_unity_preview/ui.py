@@ -73,7 +73,7 @@ class PreviewPanel(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         box.setContentsMargins(0, 0, 0, 0)
         row = QtWidgets.QHBoxLayout()
         self.exe = QtWidgets.QLineEdit(controller.exe_path)
-        self.exe.setPlaceholderText("PreviewHost.exe のパス")
+        self.exe.setPlaceholderText("PreviewHost.exe（未解凍ならOpen.bat）のパス")
         self.exe.editingFinished.connect(lambda: setattr(controller, "exe_path", self.exe.text()))
         row.addWidget(self.exe, 1)
         browse = QtWidgets.QPushButton("参照")
@@ -115,6 +115,7 @@ class PreviewPanel(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         layout.addWidget(hint)
 
         controller.status_changed.connect(self.status.setText)
+        controller.exe_path_changed.connect(self.exe.setText)
         controller.list_changed.connect(self.refresh_list)
         controller.unity_visibility_changed.connect(self.update_visibility_button)
         self.refresh_list()
@@ -123,7 +124,7 @@ class PreviewPanel(MayaQWidgetDockableMixin, QtWidgets.QWidget):
     # ------------------------------------------------------------------
     def browse(self):
         filename, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "PreviewHost.exeを選択", self.exe.text(), "Executable (*.exe)")
+            self, "PreviewHost.exeを選択", self.exe.text(), "Executable (*.exe *.bat)")
         if filename:
             self.exe.setText(filename)
             self.controller.exe_path = filename

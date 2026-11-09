@@ -58,6 +58,12 @@ class PreviewPanel(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.pip.toggled.connect(controller.set_pip)
         row.addWidget(self.pip)
         row.addStretch(1)
+        # Shown only while the panel floats (torn off its tab): puts it back as a tab.
+        self.dock_button = QtWidgets.QPushButton("タブに戻す")
+        self.dock_button.setToolTip("チャンネルボックスなどの隣のタブに戻します（浮いた窓の左の水色のつまみをドラッグしても戻せます）")
+        self.dock_button.clicked.connect(self.dock_back)
+        self.dock_button.hide()
+        row.addWidget(self.dock_button)
         self.settings_button = QtWidgets.QToolButton()
         self.settings_button.setText("設定")
         self.settings_button.setCheckable(True)
@@ -110,6 +116,11 @@ class PreviewPanel(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         hint.setStyleSheet("color:#8a8a8a;")
         layout.addWidget(hint)
 
+        self._float_timer = QtCore.QTimer(self)
+        self._float_timer.setInterval(500)
+        self._float_timer.timeout.connect(self.update_dock_button)
+        self._float_timer.start()
+
         controller.status_changed.connect(self.status.setText)
         controller.exe_path_changed.connect(self.exe.setText)
         controller.list_changed.connect(self.refresh_list)
@@ -117,6 +128,25 @@ class PreviewPanel(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.resize(360, 420)
 
     # ------------------------------------------------------------------
+    def floating(self):
+        from . import workspace_name
+        workspace = workspace_name()
+        try:
+            return (cmds.workspaceControl(workspace, query=True, exists=True)
+                    and cmds.workspaceControl(workspace, query=True, floating=True))
+        except RuntimeError:
+            return False
+
+    def update_dock_button(self):
+        if self.isVisible():
+            self.dock_button.setVisible(bool(self.floating()))
+
+    def dock_back(self):
+        from . import dock_as_tab
+        if not dock_as_tab():
+            cmds.warning("Unity HDRP Preview: 戻せるタブ（チャンネルボックス、アトリビュートエディタ、モデリングツールキット、アウトライナー）が表示されていません。")
+        self.update_dock_button()
+
     def browse(self):
         filename, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "PreviewHost.exeを選択", self.exe.text(), "Executable (*.exe *.bat)")
@@ -126,20 +156,26 @@ class PreviewPanel(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     def refresh_list(self):
         self.list.clear()
-        for uuid, name in self.controller.sync_list.items():
-            item = QtWidgets.QListWidgetItem(name.split("|")[-1] if name else "（見つかりません）" + uuid)
-            item.setData(QtCore.Qt.UserRole, uuid)
-            item.setToolTip(name or uuid)
-            if not name:
+        # One row per top-level group (the whole group is synced).
+        for root, uuids in self.controller.sync_list.groups():
+            label = root.lstrip("|") if root else "（見つかりません）" + uuids[0]
+            if root and cmds.listRelatives(root, allDescendents=True, type="transform"):
+                label += "（グループ全体）"
+            item = QtWidgets.QListWidgetItem(label)
+            item.setData(QtCore.Qt.UserRole, uuids)
+            item.setToolTip(root or uuids[0])
+            if not root:
                 item.setForeground(QtGui.QColor("#777777"))
             self.list.addItem(item)
 
     def remove_selected(self):
-        uuids = [item.data(QtCore.Qt.UserRole) for item in self.list.selectedItems()]
+        uuids = [uuid for item in self.list.selectedItems() for uuid in item.data(QtCore.Qt.UserRole)]
         if uuids:
             self.controller.remove_from_list(uuids)
 
     def select_in_maya(self, item):
-        names = cmds.ls(item.data(QtCore.Qt.UserRole), long=True) or []
+        root = item.toolTip()   # the synced top-level group
+        names = cmds.ls(root, long=True) if root.startswith("|") else cmds.ls(item.data(QtCore.Qt.UserRole), long=True)
+        names = names or []
         if names:
             cmds.select(names, replace=True)

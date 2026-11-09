@@ -6,7 +6,11 @@ Model and texture in Maya as usual. What Unity receives per Maya material:
 - @base     : file texture connected to color / baseColor
 - @normal   : file texture behind bump2d on normalCamera (tangent space normal map)
 The Unity shader and its values are chosen in the PreviewHost Inspector and saved there.
+Unity reads PNG / JPG only: other formats (GIF, TGA, TIF, BMP, EXR ...) are converted to PNG
+with Maya's own image reader into <Maya project>/unityPreview/textures (again only when the
+source file is newer), and that PNG is sent.
 """
+import hashlib
 import os
 import re
 
@@ -76,6 +80,30 @@ def file_path(file_node):
     return os.path.normpath(path).replace("\\", "/") if path else ""
 
 
+UNITY_FORMATS = (".png", ".jpg", ".jpeg")
+
+
+def unity_path(path):
+    """A path Unity can load: the file itself (PNG / JPG) or a PNG converted from it."""
+    if not path or os.path.splitext(path)[1].lower() in UNITY_FORMATS or not os.path.isfile(path):
+        return path
+    root = cmds.workspace(query=True, rootDirectory=True) or os.path.dirname(path)
+    folder = os.path.join(root, "unityPreview", "textures")
+    digest = hashlib.md5(os.path.normcase(path).encode("utf-8")).hexdigest()[:8]
+    target = os.path.join(folder, os.path.splitext(os.path.basename(path))[0] + "_" + digest + ".png")
+    try:
+        if not os.path.isfile(target) or os.path.getmtime(target) < os.path.getmtime(path):
+            from maya.api import OpenMaya as om
+            os.makedirs(folder, exist_ok=True)
+            image = om.MImage()
+            image.readFromFile(path)
+            image.writeToFile(target, "png")
+        return target.replace("\\", "/")
+    except Exception as error:   # unreadable: Unity shows its own warning for the original
+        cmds.warning("Unity HDRP Preview: PNG に変換できませんでした " + path + " (" + str(error) + ")")
+        return path
+
+
 def definition(material):
     """(MATERIAL_DEF dict, dependency nodes to watch, texture paths to watch)."""
     textures, deps = [], [material]
@@ -94,9 +122,12 @@ def definition(material):
     if normal:
         textures.append({"prop": "@normal", "path": file_path(normal)})
         deps.extend([bump, normal])
+    sources = [t["path"] for t in textures if t["path"]]   # watched: re-exports update Unity
+    for texture in textures:
+        texture["path"] = unity_path(texture["path"])
     data = {"type": "MATERIAL_DEF", "name": unity_name(material),
             "baseColor": base_color, "textures": textures}
-    return data, deps, [t["path"] for t in textures if t["path"]]
+    return data, deps, sources
 
 
 # ---------------------------------------------------------------------- texture reload

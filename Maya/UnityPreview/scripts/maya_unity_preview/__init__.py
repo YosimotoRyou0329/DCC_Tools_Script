@@ -16,25 +16,43 @@ def controller():
 DOCK_TARGETS = ("ChannelBoxLayerEditor", "AttributeEditor", "NEXDockControl", "Outliner")
 
 
-def show():
-    from maya import cmds
+def workspace_name():
     from .ui import PreviewPanel
-    workspace = PreviewPanel.OBJECT_NAME + "WorkspaceControl"
-    if cmds.workspaceControl(workspace, query=True, exists=True):
-        cmds.deleteUI(workspace)
-    panel = PreviewPanel(controller())
-    panel.show(dockable=True, floating=True, retain=False)
-    # A lone floating window only has the thin blue grip on its left to drag it into the
-    # layout. As a tab it gets a normal tab that can be dragged anywhere (and no grip).
+    return PreviewPanel.OBJECT_NAME + "WorkspaceControl"
+
+
+def dock_as_tab():
+    """Put the panel back as a tab next to the first shown DOCK_TARGETS panel.
+
+    A lone floating window only has Maya's thin grip on its left (it turns light blue when the
+    window is active) to drag it back into the layout. As a tab it gets a normal tab that can
+    be dragged anywhere, and no grip. True when it was docked.
+    """
+    from maya import cmds
+    workspace = workspace_name()
+    if not cmds.workspaceControl(workspace, query=True, exists=True):
+        return False
     for target in DOCK_TARGETS:
         try:
             if (cmds.workspaceControl(target, query=True, exists=True)
                     and cmds.workspaceControl(target, query=True, visible=True)):
                 cmds.workspaceControl(workspace, edit=True, tabToControl=(target, -1))
                 cmds.workspaceControl(workspace, edit=True, restore=True)
-                break
+                return True
         except RuntimeError:
             continue
+    return False
+
+
+def show():
+    from maya import cmds
+    from .ui import PreviewPanel
+    workspace = workspace_name()
+    if cmds.workspaceControl(workspace, query=True, exists=True):
+        cmds.deleteUI(workspace)
+    panel = PreviewPanel(controller())
+    panel.show(dockable=True, floating=True, retain=False)
+    dock_as_tab()
     return panel
 
 

@@ -66,7 +66,8 @@ class PreviewController(QtCore.QObject):
         self._texture_timer.setInterval(400)    # exporters write in several chunks
         self._texture_timer.timeout.connect(self._reload_textures)
         self.watch = SceneWatch(self._flush, self.sync_list.contains, self._scene_opened, self,
-                               on_scene_saved=self._scene_saved)
+                               on_scene_saved=self._scene_saved, targets=self.sync_list.roots,
+                               on_hierarchy_changed=self.list_changed.emit)
         self._connection_detected.connect(self._on_connection, QtCore.Qt.QueuedConnection)
         self._send_finished.connect(self._on_sent, QtCore.Qt.QueuedConnection)
         self._unpack_finished.connect(self._on_unpacked, QtCore.Qt.QueuedConnection)

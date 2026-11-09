@@ -8,6 +8,9 @@ Watched events (per mesh shape)
 - vertices edited, attributes set   : node dirty-plug + attribute-set callbacks
 - material (shading group) changed  : attribute-changed (instObjGroups connections)
 - renamed                           : name-changed (old Unity object is removed)
+- grouped / ungrouped / parented     : DAG parent added / removed (the world matrix does not
+                                      change, so this is checked separately): every mesh whose
+                                      path or sync state changed is re-sent / removed
 Global events
 - mesh created / deleted            : DG node added / removed
 - manipulator released, undo, redo,
@@ -39,12 +42,17 @@ def _remove_callbacks(ids):
 class SceneWatch(QtCore.QObject):
     """flush(paths, removed_names) -> bool. Return False when busy; the batch is retried."""
 
-    def __init__(self, flush, is_target=None, on_scene_opened=None, parent=None, on_scene_saved=None):
+    def __init__(self, flush, is_target=None, on_scene_opened=None, parent=None, on_scene_saved=None,
+                 targets=None, on_hierarchy_changed=None):
         super().__init__(parent)
         self._flush = flush
         self._is_target = is_target or (lambda dag_path: True)
         self._on_scene_opened = on_scene_opened
         self._on_scene_saved = on_scene_saved
+        # targets() -> state passed to is_target(dag_path, state) for a whole batch (optional)
+        self._targets = targets
+        self._on_hierarchy_changed = on_hierarchy_changed
+        self._hierarchy_dirty = False
         self._watched = {}       # handle hash -> (MObjectHandle, [callback ids])
         self._sent_names = {}    # handle hash -> DAG path last sent to Unity
         self._dirty = {}         # handle hash -> MObjectHandle
@@ -71,6 +79,8 @@ class SceneWatch(QtCore.QObject):
             om.MSceneMessage.addCallback(om.MSceneMessage.kAfterNew, self._after_scene),
             om.MSceneMessage.addCallback(om.MSceneMessage.kAfterOpen, self._after_scene),
             om.MSceneMessage.addCallback(om.MSceneMessage.kAfterSave, self._after_save),
+            om.MDagMessage.addParentAddedCallback(self._hierarchy_changed),
+            om.MDagMessage.addParentRemovedCallback(self._hierarchy_changed),
         ]
         for event in RECHECK_EVENTS:
             try:
@@ -203,6 +213,36 @@ class SceneWatch(QtCore.QObject):
             entry = self._watched.get(key)
             if entry:
                 self._mark(entry[0])
+        self._hierarchy_changed()   # undo / redo of a group command
+
+    def _hierarchy_changed(self, *_):
+        # Called for every node of a group / parent command: only flag it, the timer checks once.
+        self._hierarchy_dirty = True
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def _check_hierarchy(self, state):
+        """Mark meshes whose DAG path or sync state no longer matches what Unity has."""
+        self._hierarchy_dirty = False
+        for key, (handle, _ids) in list(self._watched.items()):
+            if not handle.isValid() or not handle.isAlive():
+                continue
+            node = handle.object()
+            try:
+                if om.MFnDagNode(node).isIntermediateObject:
+                    continue
+                dag_path = om.MDagPath.getAPathTo(node)
+            except RuntimeError:
+                continue
+            sent = self._sent_names.get(key)
+            target = self._target(dag_path, state)
+            if (sent is not None and (sent != dag_path.fullPathName() or not target)) or (sent is None and target):
+                self._dirty[key] = handle
+        if self._on_hierarchy_changed:
+            self._on_hierarchy_changed()
+
+    def _target(self, dag_path, state):
+        return self._is_target(dag_path, state) if self._targets else self._is_target(dag_path)
 
     def _node_added(self, node, *_):
         if self.active:
@@ -249,6 +289,9 @@ class SceneWatch(QtCore.QObject):
         self._stale_callbacks = []
         if not self.active:
             return
+        state = self._targets() if self._targets else None
+        if self._hierarchy_dirty:
+            self._check_hierarchy(state)
         paths, renamed_from, sent, dropped = [], set(), [], []
         for key, handle in list(self._dirty.items()):
             if not handle.isValid() or not handle.isAlive():
@@ -259,7 +302,7 @@ class SceneWatch(QtCore.QObject):
             dag_path = om.MDagPath.getAPathTo(node)
             path = dag_path.fullPathName()
             previous = self._sent_names.get(key)
-            if not self._is_target(dag_path):
+            if not self._target(dag_path, state):
                 if previous:
                     renamed_from.add(previous)   # no longer in the sync list -> remove in Unity
                     dropped.append(key)

@@ -8,6 +8,7 @@
   from Substance updates Maya and Unity. Shaders and their values are set in the PreviewHost.
 - SESSION tells Unity where to save its material settings: <Maya project>/unityPreview/materials
   (one JSON per material name, so the same material looks the same in every scene of the project)
+  and which .mb is open (sent again after Save As): Unity restores the last export of that scene
 """
 import json
 import os
@@ -64,7 +65,8 @@ class PreviewController(QtCore.QObject):
         self._texture_timer.setSingleShot(True)
         self._texture_timer.setInterval(400)    # exporters write in several chunks
         self._texture_timer.timeout.connect(self._reload_textures)
-        self.watch = SceneWatch(self._flush, self.sync_list.contains, self._scene_opened, self)
+        self.watch = SceneWatch(self._flush, self.sync_list.contains, self._scene_opened, self,
+                               on_scene_saved=self._scene_saved)
         self._connection_detected.connect(self._on_connection, QtCore.Qt.QueuedConnection)
         self._send_finished.connect(self._on_sent, QtCore.Qt.QueuedConnection)
         self._unpack_finished.connect(self._on_unpacked, QtCore.Qt.QueuedConnection)
@@ -203,6 +205,19 @@ class PreviewController(QtCore.QObject):
         root = cmds.workspace(query=True, rootDirectory=True) or ""
         return os.path.join(root, "unityPreview", "materials").replace("\\", "/")
 
+    @classmethod
+    def session_message(cls):
+        # scene: the .mb / .ma path ("" = untitled). Unity restores the last export of this scene.
+        scene = (cmds.file(query=True, sceneName=True) or "").replace("\\", "/")
+        return {"type": "SESSION", "materialFolder": cls.material_folder(), "scene": scene}
+
+    def _scene_saved(self):
+        if self.connected and not self.sending:
+            message = dict(self.session_message(), saved=True)   # Save As: no restore in Unity
+            self.executor.submit(send_messages, [message], self.cancelled)
+        else:
+            self._session_pending = True
+
     def _scene_opened(self):
         self._session_pending = True      # the project may have changed
         self.sync_list.load()
@@ -219,7 +234,7 @@ class PreviewController(QtCore.QObject):
             definitions = self._material_messages(meshes)
             messages = [remove_message(name) for name in removed] + definitions + meshes
             if self._session_pending:
-                messages.insert(0, {"type": "SESSION", "materialFolder": self.material_folder()})
+                messages.insert(0, self.session_message())
                 self._session_pending = False
         except Exception as error:  # a broken mesh must not stop the sync
             self._set_status("メッシュ取得エラー: " + str(error))

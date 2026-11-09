@@ -39,11 +39,12 @@ def _remove_callbacks(ids):
 class SceneWatch(QtCore.QObject):
     """flush(paths, removed_names) -> bool. Return False when busy; the batch is retried."""
 
-    def __init__(self, flush, is_target=None, on_scene_opened=None, parent=None):
+    def __init__(self, flush, is_target=None, on_scene_opened=None, parent=None, on_scene_saved=None):
         super().__init__(parent)
         self._flush = flush
         self._is_target = is_target or (lambda dag_path: True)
         self._on_scene_opened = on_scene_opened
+        self._on_scene_saved = on_scene_saved
         self._watched = {}       # handle hash -> (MObjectHandle, [callback ids])
         self._sent_names = {}    # handle hash -> DAG path last sent to Unity
         self._dirty = {}         # handle hash -> MObjectHandle
@@ -69,6 +70,7 @@ class SceneWatch(QtCore.QObject):
             om.MSceneMessage.addCallback(om.MSceneMessage.kBeforeOpen, self._before_scene),
             om.MSceneMessage.addCallback(om.MSceneMessage.kAfterNew, self._after_scene),
             om.MSceneMessage.addCallback(om.MSceneMessage.kAfterOpen, self._after_scene),
+            om.MSceneMessage.addCallback(om.MSceneMessage.kAfterSave, self._after_save),
         ]
         for event in RECHECK_EVENTS:
             try:
@@ -229,6 +231,11 @@ class SceneWatch(QtCore.QObject):
         self._watched.clear()
         self._deps.clear()
         self._on_timer()
+
+    def _after_save(self, *_):
+        # Save As changes the scene path: Unity links its exports to the .mb path
+        if self._on_scene_saved:
+            self._on_scene_saved()
 
     def _after_scene(self, *_):
         if self._on_scene_opened:
